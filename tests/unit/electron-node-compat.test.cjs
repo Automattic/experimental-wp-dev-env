@@ -134,8 +134,10 @@ test('a child started the way the shim starts one sees plain Node', () => {
 // Under `npm run test:electron` this is the assertion that would have caught the
 // bug: without the preload the child really is an Electron pretending to be Node.
 // On the system Node it is vacuous, and CI runs the suite on both.
-test('without the preload the child still looks like Electron', () => {
-	if (!process.versions.electron) return;
+test('without the preload the child still looks like Electron', (t) => {
+	// Reported as skipped rather than passed: on the system Node this asserts
+	// nothing, and a silent pass is how a one-runtime test goes unnoticed.
+	if (!process.versions.electron) return t.skip('needs the Electron runtime');
 
 	const runtime = runtimeOfChild({ preload: false });
 
@@ -145,8 +147,8 @@ test('without the preload the child still looks like Electron', () => {
 // The preload is loaded by anything that requires the module — including this
 // suite. It must stay inert unless the app asked for it, or the Electron test
 // pass would strip its own runtime out from under the other tests.
-test('the preload stays inert without the flag the shim sets', () => {
-	if (!process.versions.electron) return;
+test('the preload stays inert without the flag the shim sets', (t) => {
+	if (!process.versions.electron) return t.skip('needs the Electron runtime');
 
 	const runtime = runtimeOfChild({ flag: false });
 

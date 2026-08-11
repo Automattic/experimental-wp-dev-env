@@ -1825,6 +1825,25 @@ function assertChildEnvRequest(buildChildEnv, label) {
 	}
 }
 
+// The shims on disk, not the module that formats them. node-shims.cjs is unit
+// tested, but it is main.js that decides whether to hand it the preload path at
+// all — and blanking that argument reintroduces #275 (a build that spawns
+// processes without bound) while every other test in the repo stays green.
+// ensureNodeShimDir cannot be stubbed, so the shims it really wrote are the
+// evidence; the `after` hook above sweeps them.
+function assertShimsPreloadCompat(label) {
+	const shimDir = path.join(os.tmpdir(), `electron-node-shims-${process.pid}`);
+	const compat = path.join(shimDir, 'electron-node-compat.js');
+	assert.ok(fs.existsSync(compat), `${label}: the compat preload was not copied next to the shims`);
+
+	const shimName = process.platform === 'win32' ? 'node.cmd' : 'node';
+	const shim = fs.readFileSync(path.join(shimDir, shimName), 'utf8');
+	assert.ok(
+		shim.includes(`--require "${compat}"`),
+		`${label}: the node shim starts a child without the preload, so any yargs-based tool it runs misreads its arguments`
+	);
+}
+
 // The three cross-platform decisions every spawn in main.js makes. No module
 // owns them — they are options handed to child_process, not behaviour someone
 // else can test — so this is the only thing that fails when one is deleted
@@ -1909,6 +1928,8 @@ test('npm:run-script spawns the script runner through npm-runner too', async () 
 	assert.deepEqual(cp.spawned[0].args.slice(1), ['/sites/wp', 'build', '--quiet']);
 	assert.equal(cp.spawned[0].options.env, env);
 	assertChildEnvRequest(buildChildEnv, 'npm:run-script');
+	// The build path: the one a runaway would actually be launched from (#275).
+	assertShimsPreloadCompat('npm:run-script');
 	assertCrossPlatformSpawnOptions(cp.spawned[0].options, 'npm:run-script');
 });
 

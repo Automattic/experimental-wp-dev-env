@@ -177,7 +177,10 @@ function ensureNodeShimDir() {
         fs.copyFileSync(path.join(__dirname, 'electron-node-compat.js'), dest);
         nodeCompatPath = dest;
     } catch (e) {
-        process.stderr.write(`Could not install the Node compatibility preload: ${String(e && e.message ? e.message : e)}\n`);
+        // The app's own log, not stderr: a packaged app has no terminal
+        // attached, so a stream write would go nowhere on the one path that
+        // decides whether a build can run away.
+        logError('app', `Could not install the Node compatibility preload: ${String(e && e.message ? e.message : e)}`);
     }
     try {
         if (process.platform === 'win32') {
@@ -245,7 +248,6 @@ function spawnRunner(runnerPath, args, { cwd, extraEnv = {} }) {
 		env: buildChildEnv({
 			shimDir: ensureNodeShimDir(),
 			spawnPatchPath,
-			nodeCompatPath,
 			npmCliPath,
 			npxCliPath,
 			extraEnv
