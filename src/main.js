@@ -15,6 +15,7 @@ const {
 	buildChildEnv,
 	RELAXED_ENGINES_ENV
 } = require('./npm-runner');
+const { nodeShim, cliShim } = require('./node-shims.cjs');
 const {
 	initLogging,
 	getLogFilePath,
@@ -155,15 +156,32 @@ let nodeShimDir = null;
 // shims, preloaded into descendant Node processes via NODE_OPTIONS so that a
 // bare spawn('node') hitting node.cmd does not fail with EINVAL.
 let spawnPatchPath = null;
+// All platforms: absolute path of the runtime-identity patch copied next to the
+// shims, and `--require`d by each of them so that a tool started through the
+// shim sees plain Node instead of Electron (#275). See node-shims.cjs.
+let nodeCompatPath = null;
 let npmCliPath = null;
 let npxCliPath = null;
 function ensureNodeShimDir() {
     if (nodeShimDir) return nodeShimDir;
     nodeShimDir = path.join(os.tmpdir(), `electron-node-shims-${process.pid}`);
     fse.ensureDirSync(nodeShimDir);
+    // Copied out of the app bundle for the same reason as win-spawn-patch below:
+    // a --require path inside app.asar is not reliably resolvable under
+    // ELECTRON_RUN_AS_NODE. Must happen before the shims are written, since each
+    // of them names this path. A failure here is non-fatal on its own terms — the
+    // shims are still written, just without the preload — but it is what keeps a
+    // build from running away, so it is worth a log line.
+    try {
+        const dest = path.join(nodeShimDir, 'electron-node-compat.js');
+        fs.copyFileSync(path.join(__dirname, 'electron-node-compat.js'), dest);
+        nodeCompatPath = dest;
+    } catch (e) {
+        process.stderr.write(`Could not install the Node compatibility preload: ${String(e && e.message ? e.message : e)}\n`);
+    }
     try {
         if (process.platform === 'win32') {
-            const content = `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" %*\r\n`;
+            const content = nodeShim({ execPath: process.execPath, compatPath: nodeCompatPath });
             fs.writeFileSync(path.join(nodeShimDir, 'node.cmd'), content);
             fs.writeFileSync(path.join(nodeShimDir, 'node.bat'), content);
             // Provide npm/npx shims that invoke npm's CLI through Electron's Node
@@ -174,8 +192,8 @@ function ensureNodeShimDir() {
                 const npxCliAbsPath = path.join(npmRootDir, 'bin', 'npx-cli.js');
                 npmCliPath = npmCliAbsPath;
                 npxCliPath = npxCliAbsPath;
-                const npmCmd = `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${npmCliAbsPath}" %*\r\n`;
-                const npxCmd = `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${npxCliAbsPath}" %*\r\n`;
+                const npmCmd = cliShim({ execPath: process.execPath, compatPath: nodeCompatPath, cliPath: npmCliAbsPath });
+                const npxCmd = cliShim({ execPath: process.execPath, compatPath: nodeCompatPath, cliPath: npxCliAbsPath });
                 fs.writeFileSync(path.join(nodeShimDir, 'npm.cmd'), npmCmd);
                 fs.writeFileSync(path.join(nodeShimDir, 'npm.bat'), npmCmd);
                 fs.writeFileSync(path.join(nodeShimDir, 'npx.cmd'), npxCmd);
@@ -193,7 +211,7 @@ function ensureNodeShimDir() {
             // Intentionally do NOT create node.exe here, as Electron's exe depends on adjacent DLLs.
             // Using node.exe from a temp dir causes STATUS_DLL_NOT_FOUND (0xC0000135) when spawned by npm.
         } else {
-            const content = `#!/usr/bin/env bash\nELECTRON_RUN_AS_NODE=1 "${process.execPath}" "$@"\n`;
+            const content = nodeShim({ execPath: process.execPath, compatPath: nodeCompatPath });
             fs.writeFileSync(path.join(nodeShimDir, 'node'), content, { mode: 0o755 });
             // Provide npm/npx shims that invoke npm's CLI through Electron's Node
             try {
@@ -201,8 +219,8 @@ function ensureNodeShimDir() {
                 const npmRootDir = path.dirname(npmPkgJsonPath);
                 const npmCliAbsPath = path.join(npmRootDir, 'bin', 'npm-cli.js');
                 const npxCliAbsPath = path.join(npmRootDir, 'bin', 'npx-cli.js');
-                const npmSh = `#!/usr/bin/env bash\nELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${npmCliAbsPath}" "$@"\n`;
-                const npxSh = `#!/usr/bin/env bash\nELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${npxCliAbsPath}" "$@"\n`;
+                const npmSh = cliShim({ execPath: process.execPath, compatPath: nodeCompatPath, cliPath: npmCliAbsPath });
+                const npxSh = cliShim({ execPath: process.execPath, compatPath: nodeCompatPath, cliPath: npxCliAbsPath });
                 fs.writeFileSync(path.join(nodeShimDir, 'npm'), npmSh, { mode: 0o755 });
                 fs.writeFileSync(path.join(nodeShimDir, 'npx'), npxSh, { mode: 0o755 });
             } catch {}
@@ -227,6 +245,7 @@ function spawnRunner(runnerPath, args, { cwd, extraEnv = {} }) {
 		env: buildChildEnv({
 			shimDir: ensureNodeShimDir(),
 			spawnPatchPath,
+			nodeCompatPath,
 			npmCliPath,
 			npxCliPath,
 			extraEnv
