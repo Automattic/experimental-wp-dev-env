@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { nodeShim, cliShim, COMPAT_FLAG } = require('../src/node-shims.cjs');
+const { nodeShim, cliShim, COMPAT_FLAG } = require('../../src/node-shims.cjs');
 
 const EXEC = {
 	darwin: '/Applications/App.app/Contents/MacOS/App',

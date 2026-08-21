@@ -3,10 +3,10 @@ const assert = require('node:assert');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { hideElectronRuntime, ELECTRON_VERSION_KEYS } = require('../src/electron-node-compat.js');
-const { COMPAT_FLAG } = require('../src/node-shims.cjs');
+const { hideElectronRuntime, ELECTRON_VERSION_KEYS } = require('../../src/electron-node-compat.js');
+const { COMPAT_FLAG } = require('../../src/node-shims.cjs');
 
-const COMPAT_PATH = path.join(__dirname, '..', 'src', 'electron-node-compat.js');
+const COMPAT_PATH = path.join(__dirname, '..', '..', 'src', 'electron-node-compat.js');
 
 // The detection this patch exists to defeat, spelled out rather than described:
 // `yargs/helpers.hideBin` slices process.argv from here, and reads "electron set,
