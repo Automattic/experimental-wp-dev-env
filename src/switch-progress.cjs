@@ -21,12 +21,14 @@
 // line to move, few enough that the IPC channel stays a channel.
 const DEFAULT_INTERVAL_MS = 100;
 
-// isomorphic-git's own phase strings, which belong to it and not to us. Pinned
-// here so a version bump breaks one lookup rather than leaking a foreign
-// vocabulary into the UI.
+// Git's own phase names, lowercased by git-progress.cjs, which belong to it
+// and not to us. Pinned here so a Git upgrade that renames one breaks a single
+// lookup rather than leaking a foreign vocabulary into the UI. `Updating
+// files` is what checkout has said since 2.x; the older name is kept in case
+// a site's own hooks or filters ever surface it.
 const CHECKOUT_PHASES = {
-	'Analyzing workdir': 'analyze',
-	'Updating workdir': 'apply'
+	'updating files': 'apply',
+	'checking out files': 'apply'
 };
 
 /**
@@ -42,9 +44,9 @@ const CHECKOUT_PHASES = {
  * changes, and again by `flush()` at the end. A progress line that freezes is
  * read as a hang, which is the exact failure this is meant to prevent.
  *
- * `emit` is deliberately synchronous and returns nothing: isomorphic-git awaits
- * whatever `onProgress` returns, so a promise here would add a microtask
- * between every one of those 4400 events.
+ * `emit` is deliberately synchronous and returns nothing: it is called from a
+ * stderr listener for every progress line Git prints, and a promise here would
+ * add a microtask between every one of those events for nobody to await.
  *
  * @param {Object}   options
  * @param {Function} options.onEmit       Called with each payload that survives.
@@ -87,11 +89,11 @@ function createProgressThrottle({ onEmit, intervalMs = DEFAULT_INTERVAL_MS, now 
 }
 
 /**
- * One of isomorphic-git's checkout progress events, in this app's vocabulary.
- *
- * `Analyzing workdir` reports a running count with no total — there is no
- * honest percentage for that half, and the sentence for it says so rather than
- * inventing one.
+ * One of Git's checkout progress events (git-progress.cjs), in this app's
+ * vocabulary. Git reports one phase, with a total, once the files to write are
+ * known; the `analyze` stage the old engine reported before that has no
+ * counterpart and is simply never emitted now, which `describeSwitchProgress`
+ * tolerates like any other absent stage.
  *
  * @param {{phase: string, loaded: number, total: number}} event
  * @return {{stage: string, loaded: number, total: ?number}} Our shape.
@@ -154,8 +156,8 @@ function describeSwitchProgress({ stage, loaded, total, from, to } = {}) {
 		case 'done':
 			return ticketOf(to) ? `Ready to work on #${ticketOf(to)}` : 'Ready';
 		default:
-			// A stage this version does not know — a newer isomorphic-git, or a
-			// caller ahead of this module. Saying something true and vague beats
+			// A stage this version does not know — a newer Git, or a caller
+			// ahead of this module. Saying something true and vague beats
 			// rendering nothing where a sentence was.
 			return 'Working…';
 	}
