@@ -1906,8 +1906,20 @@ ipcMain.handle('wordpress:setup', async (event, destDir, options = {}) => {
 	// guards refuse to open it for the whole clone (#180), and `sites:delete`
 	// would happily remove it if they did not. setup-tracker.js has the why;
 	// `track` releases the entry however this ends.
+	// The clone outlives the window that asked for it: on macOS closing it does
+	// not quit the app (`window-all-changed` only quits elsewhere), and the
+	// child keeps running until the quit sweep. Progress now arrives on a
+	// stderr listener rather than inside the awaited chain the old engine used,
+	// so a send into a destroyed webContents would throw "Object has been
+	// destroyed" straight into the stream — an uncaught exception in the main
+	// process rather than a rejected `invoke`. The clone still has to finish or
+	// clean up after itself, so the report is what is dropped, not the work.
+	const notify = (channel, payload) => {
+		if (!event.sender.isDestroyed()) event.sender.send(channel, payload);
+	};
+
 	return setupTracker.track(siteDir, async () => {
-		event.sender.send('download:status', { phase: 'cloning', target: siteDir });
+		notify('download:status', { phase: 'cloning', target: siteDir });
 		try {
 			await cloneSite({
 				url: WORDPRESS_GIT_URL,
@@ -1916,7 +1928,7 @@ ipcMain.handle('wordpress:setup', async (event, destDir, options = {}) => {
 				onProgress: (evt) => {
 					// Same line the old engine produced, so the terminal panel reads
 					// the same: `<phase> <loaded>/<total>`.
-					event.sender.send('download:progress', { target: siteDir, message: `${evt.phase} ${evt.loaded}/${evt.total}` });
+					notify('download:progress', { target: siteDir, message: `${evt.phase} ${evt.loaded}/${evt.total}` });
 				}
 			});
 		} catch (error) {
@@ -1953,7 +1965,7 @@ ipcMain.handle('wordpress:setup', async (event, destDir, options = {}) => {
 			} catch {}
 			s.set('siteMeta', meta);
 		}
-		event.sender.send('download:status', { phase: 'done', target: siteDir, sitePath: siteDir });
+		notify('download:status', { phase: 'done', target: siteDir, sitePath: siteDir });
 		return siteDir;
 	});
 });
