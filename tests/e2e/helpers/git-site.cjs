@@ -73,6 +73,10 @@ async function makeSite( session, { label = 'e2e-site' } = {} ) {
 	const dir = session.track( fs.mkdtempSync( path.join( os.tmpdir(), 'wpct-e2e-site-' ) ) );
 
 	await git.init( { fs, dir, defaultBranch: TRUNK } );
+	// The shape the clone writes (git-clone.cjs): a site the app supports has
+	// core.autocrlf pinned, so a switch writes LF on Windows too and the
+	// byte-for-byte invariants mean the same on every platform.
+	await git.setConfig( { fs, dir, path: 'core.autocrlf', value: false } );
 	fs.mkdirSync( path.join( dir, 'src' ), { recursive: true } );
 	for ( const [ file, content ] of Object.entries( TRUNK_FILES ) ) {
 		fs.writeFileSync( path.join( dir, file ), content );

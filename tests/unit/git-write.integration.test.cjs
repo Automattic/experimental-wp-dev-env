@@ -15,9 +15,13 @@ const IDENTITY = ['-c', 'user.name=T', '-c', 'user.email=t@example.com'];
 function makeRepo(t) {
 	const dir = tempDir(t, 'toolkit git-write-');
 	git(['init', '-q', '-b', 'trunk'], dir);
+	// The shape the clone writes (git-clone.cjs): a site the app supports has
+	// core.autocrlf pinned, so the checkout writes LF on Windows too and the
+	// byte-for-byte assertions below mean the same on every platform.
+	git(['config', 'core.autocrlf', 'false'], dir);
 	fs.writeFileSync(path.join(dir, 'kept.txt'), 'kept\n');
 	fs.writeFileSync(path.join(dir, 'doomed.txt'), 'doomed\n');
-	fs.writeFileSync(path.join(dir, 'weird[1]*.txt'), 'literal\n');
+	fs.writeFileSync(path.join(dir, 'weird[1].txt'), 'literal\n');
 	git(['add', '.'], dir);
 	git([...IDENTITY, 'commit', '-q', '-m', 'first'], dir);
 	return { dir, base: git(['rev-parse', 'HEAD'], dir).stdout };
@@ -27,11 +31,11 @@ test('stagePaths stages a modification, an addition and a deletion, and a glob-l
 	const { dir } = makeRepo(t);
 	fs.writeFileSync(path.join(dir, 'kept.txt'), 'changed\n');
 	fs.writeFileSync(path.join(dir, 'new.txt'), 'new\n');
-	fs.writeFileSync(path.join(dir, 'w.txt'), 'would match the glob\n');
+	fs.writeFileSync(path.join(dir, 'weird1.txt'), 'would match the glob\n');
 	fs.unlinkSync(path.join(dir, 'doomed.txt'));
-	fs.writeFileSync(path.join(dir, 'weird[1]*.txt'), 'still literal\n');
+	fs.writeFileSync(path.join(dir, 'weird[1].txt'), 'still literal\n');
 
-	await stagePaths(dir, ['kept.txt', 'new.txt', 'doomed.txt', 'weird[1]*.txt']);
+	await stagePaths(dir, ['kept.txt', 'new.txt', 'doomed.txt', 'weird[1].txt']);
 
 	const { stdout } = git(['status', '--porcelain=v2', '-z', '--untracked-files=all'], dir);
 	// `<type> <XY> ... <path>` per entry; the path is the last field.
@@ -43,8 +47,8 @@ test('stagePaths stages a modification, an addition and a deletion, and a glob-l
 		'kept.txt': '1 M.',
 		'doomed.txt': '1 D.',
 		'new.txt': '1 A.',
-		'weird[1]*.txt': '1 M.',
-		'w.txt': '? w.txt'
+		'weird[1].txt': '1 M.',
+		'weird1.txt': '? weird1.txt'
 	}, 'the bracketed name was staged as itself, and the file its glob would match was not');
 });
 

@@ -41,6 +41,10 @@ async function makeSite(t) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-branches-test-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	await git.init({ fs, dir, defaultBranch: TRUNK });
+	// The shape the clone writes (git-clone.cjs): a site the app supports has
+	// core.autocrlf pinned, so the binary's checkout writes LF on Windows too
+	// and the byte-for-byte assertions mean the same on every platform.
+	await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\nbuild/\n');
 	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
 	fs.writeFileSync(path.join(dir, 'doomed.php'), '<?php // to be deleted\n');
@@ -400,17 +404,17 @@ test('after a park the worktree is clean against HEAD, deletions included (issue
 test('files whose names look like globs, or hold spaces, are parked and restored literally (issue #385)', async (t) => {
 	const { dir } = await makeSite(t);
 	const first = await startTicketBranch(dir, 59234);
-	fs.writeFileSync(path.join(dir, 'weird[1]*.php'), '<?php // literal\n');
-	fs.writeFileSync(path.join(dir, 'w.php'), '<?php // the glob would match this one too\n');
+	fs.writeFileSync(path.join(dir, 'weird[1].php'), '<?php // literal\n');
+	fs.writeFileSync(path.join(dir, 'weird1.php'), '<?php // the glob would match this one too\n');
 	fs.writeFileSync(path.join(dir, 'with space.php'), '<?php // spaced\n');
 
 	await switchToBranch(dir, TRUNK, { baseOid: first.baseOid });
-	assert.equal(exists(dir, 'weird[1]*.php'), false);
+	assert.equal(exists(dir, 'weird[1].php'), false);
 	assert.equal(exists(dir, 'with space.php'), false);
 	await switchToBranch(dir, first.ref, { baseOid: first.baseOid });
 
-	assert.equal(read(dir, 'weird[1]*.php'), '<?php // literal\n');
-	assert.equal(read(dir, 'w.php'), '<?php // the glob would match this one too\n');
+	assert.equal(read(dir, 'weird[1].php'), '<?php // literal\n');
+	assert.equal(read(dir, 'weird1.php'), '<?php // the glob would match this one too\n');
 	assert.equal(read(dir, 'with space.php'), '<?php // spaced\n');
 });
 
