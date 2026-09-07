@@ -15,7 +15,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const git = require('isomorphic-git');
 const {
@@ -33,13 +32,14 @@ const {
 	deleteTicketBranch
 } = require('../../src/ticket-branches.js');
 const { describeSwitchProgress } = require('../../src/switch-progress.cjs');
-const { git: bundledGit } = require('./helpers/git.cjs');
+const { git: bundledGit, tempDir } = require('./helpers/git.cjs');
 
 const AUTHOR = { name: 'test', email: 'test@example.com' };
 
 async function makeSite(t) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-branches-test-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	// tempDir rather than a bare rmSync: the binary writes its objects
+	// read-only, and on Windows rmSync answers that with EPERM (#381).
+	const dir = tempDir(t, 'ticket-branches-test-');
 	await git.init({ fs, dir, defaultBranch: TRUNK });
 	// The shape the clone writes (git-clone.cjs): a site the app supports has
 	// core.autocrlf pinned, so the binary's checkout writes LF on Windows too
