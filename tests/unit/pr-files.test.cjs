@@ -21,34 +21,15 @@ const {
 
 const DIR = '/sites/wp';
 
-// A fake `git` whose HEAD commit records the given path → mode map. Tree
-// lookups walk path segments the way the real module does, so a nested path
-// exercises the descent.
-function fakeGitWithModes(modes) {
-	const paths = Object.keys(modes);
-	return {
-		readCommit: async () => ({ commit: { tree: 'root' } }),
-		readTree: async ({ oid }) => {
-			const prefix = oid === 'root' ? '' : `${oid}/`;
-			const seen = new Set();
-			const tree = [];
-			for (const p of paths.filter((x) => x.startsWith(prefix))) {
-				const rest = p.slice(prefix.length);
-				const segment = rest.split('/')[0];
-				if (seen.has(segment)) continue;
-				seen.add(segment);
-				tree.push(rest.includes('/')
-					? { path: segment, oid: `${prefix}${segment}`, mode: '040000' }
-					: { path: segment, oid: `blob-${p}`, mode: modes[p] });
-			}
-			return { tree };
-		}
-	};
+// A fake `treeEntryMode` answering from the given path → mode map, the way
+// git-read.cjs answers from one `ls-tree` on the path.
+function fakeTreeWithModes(modes) {
+	return async (dir, oid, filepath) => (Object.hasOwn(modes, filepath) ? modes[filepath] : null);
 }
 
 function deps(overrides = {}) {
 	return {
-		git: fakeGitWithModes({}),
+		treeEntryMode: fakeTreeWithModes({}),
 		fs: null,
 		dir: DIR,
 		headOid: 'head',
@@ -88,7 +69,7 @@ test('on Windows the mode recorded in HEAD decides, and the filesystem is never 
 		deps({
 			platform: 'win32',
 			stat: async () => { statted = true; return { mode: 0o644 }; },
-			git: fakeGitWithModes({ 'tools/build.sh': '100755' })
+			treeEntryMode: fakeTreeWithModes({ 'tools/build.sh': '100755' })
 		}),
 		{ path: 'tools/build.sh', inHead: true, inWorkdir: true }
 	);
@@ -98,7 +79,7 @@ test('on Windows the mode recorded in HEAD decides, and the filesystem is never 
 
 test('an added file on Windows has no recorded mode and no bit: 100644', async () => {
 	const mode = await fileModeForEntry(
-		deps({ platform: 'win32', git: fakeGitWithModes({}) }),
+		deps({ platform: 'win32', treeEntryMode: fakeTreeWithModes({}) }),
 		{ path: 'new-file.php', inHead: false, inWorkdir: true }
 	);
 	assert.strictEqual(mode, GIT_MODE_FILE);
@@ -111,7 +92,7 @@ test('a deletion reads its mode from HEAD without touching the missing path', as
 		[{ path: 'src/wp-includes/gone.php', inHead: true, inWorkdir: false, base: Buffer.from('x'), work: null }],
 		deps({
 			stat: async () => { statted = true; throw new Error('ENOENT'); },
-			git: fakeGitWithModes({ 'src/wp-includes/gone.php': '100644' })
+			treeEntryMode: fakeTreeWithModes({ 'src/wp-includes/gone.php': '100644' })
 		})
 	);
 	assert.deepStrictEqual(entries, [{

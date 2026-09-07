@@ -9,8 +9,9 @@
  *
  * No Electron dependency, so `node --test` can exercise it against real
  * repositories (same rationale as trunk-update.js, whose `ensureAutocrlf` this
- * module reuses rather than re-deriving). main.js owns the IPC plumbing and the
- * electron-store writes.
+ * module reuses rather than re-deriving). Reads go through the bundled Git
+ * (git-read.cjs, #384); the writes still run on isomorphic-git until #385.
+ * main.js owns the IPC plumbing and the electron-store writes.
  *
  * Two invariants hold everything else up:
  *
@@ -30,6 +31,7 @@ const fs = require('fs');
 const git = require('isomorphic-git');
 const { ensureAutocrlf } = require('./trunk-update.js');
 const { mapCheckoutPhase } = require('./switch-progress.cjs');
+const { currentBranch, listBranches, statusRows, changesAgainst } = require('./git-read.cjs');
 
 /** The pristine snapshot branch. Never committed to, never deleted. */
 const TRUNK = 'trunk';
@@ -77,8 +79,7 @@ function ticketIdFromRef(ref) {
  * @param {string} dir
  */
 async function currentBranchName(dir) {
-	const name = await git.currentBranch({ fs, dir, fullname: false });
-	return name || null;
+	return currentBranch(dir);
 }
 
 /**
@@ -88,7 +89,7 @@ async function currentBranchName(dir) {
  * @param {string} dir
  */
 async function listTicketBranches(dir) {
-	const branches = await git.listBranches({ fs, dir });
+	const branches = await listBranches(dir);
 	return branches.filter((ref) => ref !== TRUNK);
 }
 
@@ -160,15 +161,18 @@ async function countChangesAgainst(dir, ref = 'HEAD') {
 
 /**
  * One worktree scan, and what the callers need from it. Split out because the
- * scan is the expensive part of every park and every switch — `statusMatrix`
- * hashes every non-ignored file, and wordpress-develop has thousands.
+ * scan is the expensive part of every park and every switch: Git hashes every
+ * file whose stat data went stale, and wordpress-develop has thousands.
+ *
+ * Against HEAD it is `git status`, which also fills the index column
+ * `stageWorktree` reads; against any other commit (a ticket's branch point,
+ * once work is parked) it is `git diff <commit>` plus the untracked files.
  *
  * @param {string} dir
  * @param {string} [ref]
  */
 async function scanWorktree(dir, ref = 'HEAD') {
-	const gitFs = await ensureAutocrlf(dir);
-	const matrix = await git.statusMatrix({ fs: gitFs, dir, ref });
+	const matrix = ref === 'HEAD' ? await statusRows(dir) : await changesAgainst(dir, ref);
 	return { matrix, changed: matrix.some(([, head, workdir]) => head !== workdir) };
 }
 
@@ -232,7 +236,7 @@ async function parkCurrentWork(dir, { baseOid, author = WIP_AUTHOR, onProgress =
  */
 async function startTicketBranch(dir, ticketId) {
 	const ref = ticketBranchRef(ticketId);
-	const existing = await git.listBranches({ fs, dir });
+	const existing = await listBranches(dir);
 	if (existing.includes(ref)) {
 		const error = new Error(`Already working on ticket #${ticketId} in this site`);
 		error.code = 'branch-exists';
@@ -272,7 +276,7 @@ async function switchToBranch(dir, ref, { baseOid, author = WIP_AUTHOR, onProgre
 	const from = await currentBranchName(dir);
 	if (from === ref) return { switched: false, from, to: ref, parked: false };
 
-	const branches = await git.listBranches({ fs, dir });
+	const branches = await listBranches(dir);
 	if (!branches.includes(ref)) {
 		const error = new Error(`No such branch: ${ref}`);
 		error.code = 'no-such-branch';
@@ -351,7 +355,7 @@ async function deleteTicketBranch(dir, ref) {
 		error.code = 'not-a-ticket-branch';
 		throw error;
 	}
-	const branches = await git.listBranches({ fs, dir });
+	const branches = await listBranches(dir);
 	if (!branches.includes(ref)) {
 		const error = new Error(`No such branch: ${ref}`);
 		error.code = 'no-such-branch';
