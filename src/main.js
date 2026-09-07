@@ -466,6 +466,12 @@ async function collectChangedFiles(dir, baseOid = null) {
             try { base = await resolveRef(dir, 'refs/heads/trunk'); } catch {}
         }
     }
+    if (!base) {
+        // Nothing to compare against: `.git` is gone, unreadable, or has no
+        // commit. An error, not "No changes": a patch panel that quietly shows
+        // nothing for a broken site is the failure nobody reports.
+        throw new Error(`${dir} is not a repository the app can read: no HEAD and no trunk to compare against.`);
+    }
 
     // One scan, against the branch point. Untracked files need no staging to
     // appear: the scan already reports them as [path, 0, 2, 0] and the
@@ -474,11 +480,14 @@ async function collectChangedFiles(dir, baseOid = null) {
     // and never unstaged it (#85) — with the branch point as the base it earns
     // nothing, so it is gone. (`staleStagedPaths` in trunk-update.js stays: it
     // still has to clean up residue left in indexes by earlier versions.)
-    const matrix = base ? await changesAgainst(dir, base) : [];
+    const matrix = await changesAgainst(dir, base);
     const changed = matrix.filter(([, head, workdir]) => head !== workdir);
     // Every base blob in one spawn, rather than one process per changed file.
+    // A failed batch reads as every base unreadable, which classifyChangedFile
+    // names above the diff rather than diffing: wider than the per-file catch
+    // this replaced, but on the safe side.
     const inBase = changed.filter(([, head]) => head !== 0).map(([filepath]) => filepath);
-    const baseBlobs = base ? await readBlobs(dir, base, inBase).catch(() => new Map()) : new Map();
+    const baseBlobs = await readBlobs(dir, base, inBase).catch(() => new Map());
     const files = [];
     for (const [filepath, head, workdir] of changed) {
         const abs = path.join(dir, filepath);

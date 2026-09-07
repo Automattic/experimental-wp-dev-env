@@ -51,11 +51,13 @@ function splitNul(buf) {
  *   stage   0 absent from index, 1 identical to HEAD, 2 staged change,
  *           3 staged change with further unstaged edits
  *
- * Known divergence: a file staged and then edited back to its HEAD content is
- * `workdir = 2` here (Y reports it as modified against the index) where
- * isomorphic-git, which hashes, said 1. Every consumer that acts on the file
- * byte-compares afterwards (isCrlfOnlyChange, classifyChangedFile), so only a
- * count can differ, and only for a user who staged with their own client.
+ * Known divergences, both only reachable through a user's own client: a file
+ * staged and then edited back to its HEAD content is `workdir = 2` here (Y
+ * reports it as modified against the index) where isomorphic-git, which
+ * hashes, said 1; and a path removed from the index but kept on disk is one
+ * "different" row here where isomorphic-git said identical. Every consumer
+ * that acts on the file byte-compares afterwards (isCrlfOnlyChange,
+ * classifyChangedFile), so only a count can differ.
  *
  * @param {string} xy
  * @param {string} filepath
@@ -64,9 +66,12 @@ function splitNul(buf) {
 function rowFromStatusEntry(xy, filepath) {
 	const x = xy[0];
 	const y = xy[1];
-	const head = x === 'A' ? 0 : 1;
+	// `A` in either column is a path HEAD does not have: staged as new (`A.`)
+	// or intent-to-add (`.A`). `D.` is a deletion already staged, so the file
+	// is gone from disk as well as from the index.
+	const head = x === 'A' || y === 'A' ? 0 : 1;
 	let workdir;
-	if (y === 'D') workdir = 0;
+	if (y === 'D' || (x === 'D' && y === '.')) workdir = 0;
 	else if (x === '.' && y === '.') workdir = 1;
 	else workdir = 2;
 	let stage;
@@ -91,15 +96,23 @@ function rowFromStatusEntry(xy, filepath) {
 function parseStatusV2Z(buf) {
 	const rows = [];
 	const fields = splitNul(buf);
+	// A path removed from the index but still on disk (`git rm --cached`)
+	// comes back twice, as `1 D.` and again as `?`. One row, "present and
+	// different": the byte compare downstream settles whether it really is.
+	const merge = (row) => {
+		const index = rows.findIndex(([filepath]) => filepath === row[0]);
+		if (index === -1) rows.push(row);
+		else rows[index] = [row[0], 1, 2, 0];
+	};
 	for (let i = 0; i < fields.length; i++) {
 		const entry = fields[i].toString('utf8');
 		const kind = entry[0];
 		if (kind === '?') {
-			rows.push([entry.slice(2), 0, 2, 0]);
+			merge([entry.slice(2), 0, 2, 0]);
 		} else if (kind === '1') {
 			// 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
 			const parts = entry.split(' ');
-			rows.push(rowFromStatusEntry(parts[1], parts.slice(8).join(' ')));
+			merge(rowFromStatusEntry(parts[1], parts.slice(8).join(' ')));
 		} else if (kind === '2') {
 			// 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <Xscore> <path>, then <origPath>
 			const parts = entry.split(' ');
@@ -149,7 +162,9 @@ function parseZList(buf) {
 
 /**
  * `git cat-file --batch` output, in request order → the object bytes per
- * request, or null where Git answered `missing`. Requests are `<oid>:<path>`
+ * request, or null where Git answered `missing`. Paths are decoded as UTF-8
+ * here and everywhere below; a path that is not valid UTF-8 would round-trip
+ * wrongly, and wordpress-develop has none. Requests are `<oid>:<path>`
  * strings; the caller supplies them in the same order it wrote them to stdin.
  *
  * Each answer is a header line `<sha> <type> <size>\n`, then `size` bytes,
@@ -172,6 +187,10 @@ function parseCatFileBatch(buf, requests) {
 			continue;
 		}
 		const size = Number(header.split(' ')[2]);
+		// A `missing` echo of a path containing a newline does not end with
+		// " missing" on its first line; every offset after it would be wrong,
+		// so stop here and let the remaining requests read as absent.
+		if (!Number.isFinite(size)) break;
 		answers.set(request, Buffer.from(buf.subarray(pos, pos + size)));
 		pos += size + 1;
 	}
@@ -290,14 +309,15 @@ async function listBranches(dir) {
  * The worktree against HEAD, every non-ignored file, in status rows. This is
  * the scan every park and every dirty check runs.
  *
- * @param {string} dir
- * @param {Object} [options]
- * @param {string} [options.platform]
+ * @param {string}   dir
+ * @param {Object}   [options]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]      Injection point for tests.
  * @return {Promise<Array[]>}
  */
-async function statusRows(dir, { platform = process.platform } = {}) {
-	const crlf = await crlfArgs(dir, { platform });
-	const { stdout } = await runGit([...crlf, 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--no-renames'], { cwd: dir });
+async function statusRows(dir, { platform = process.platform, run = runGit } = {}) {
+	const crlf = await crlfArgs(dir, { platform, run });
+	const { stdout } = await run([...crlf, 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--no-renames'], { cwd: dir });
 	return parseStatusV2Z(stdout);
 }
 
@@ -307,22 +327,30 @@ async function statusRows(dir, { platform = process.platform } = {}) {
  * `git diff <commit>` compares by content, so a file whose stat data is stale
  * is hashed rather than reported; untracked files come from `ls-files`.
  *
- * @param {string} dir
- * @param {string} ref
- * @param {Object} [options]
- * @param {string} [options.platform]
+ * @param {string}   dir
+ * @param {string}   ref
+ * @param {Object}   [options]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]      Injection point for tests.
  * @return {Promise<Array[]>}
  */
-async function changesAgainst(dir, ref, { platform = process.platform } = {}) {
-	const crlf = await crlfArgs(dir, { platform });
-	const diff = await runGit([...crlf, 'diff', '--name-status', '-z', '--no-renames', ref, '--'], { cwd: dir });
-	const others = await runGit([...crlf, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: dir });
+async function changesAgainst(dir, ref, { platform = process.platform, run = runGit } = {}) {
+	const crlf = await crlfArgs(dir, { platform, run });
+	const diff = await run([...crlf, 'diff', '--name-status', '-z', '--no-renames', ref, '--'], { cwd: dir });
+	const others = await run([...crlf, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: dir });
 	const rows = parseNameStatusZ(diff.stdout);
-	const seen = new Set(rows.map(([filepath]) => filepath));
+	const byPath = new Map(rows.map((row, index) => [row[0], index]));
 	for (const filepath of parseZList(others.stdout)) {
-		if (seen.has(filepath)) continue;
-		seen.add(filepath);
-		rows.push([filepath, 0, 2, 0]);
+		const index = byPath.get(filepath);
+		if (index === undefined) {
+			byPath.set(filepath, rows.length);
+			rows.push([filepath, 0, 2, 0]);
+		} else if (rows[index][2] === 0) {
+			// The diff called it deleted because it left the index (`git rm
+			// --cached`), but the file is on disk. Reporting a deletion here is
+			// how a patch would delete a file the contributor still has (#85).
+			rows[index] = [filepath, 1, 2, 0];
+		}
 	}
 	return rows;
 }

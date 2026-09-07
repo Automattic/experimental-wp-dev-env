@@ -29,6 +29,7 @@ To run one file: `node --test tests/unit/azure-sign.test.cjs`. To run one journe
 tests/
   unit/            layers 1-3 — npm test — under three seconds
     fixtures/      package.json trees the integration tests copy; not tests themselves
+    helpers/       the bundled-Git driver the Git suites share; not a test either
   e2e/
     journeys/      layer 4 — npm run test:e2e
     packaged/      layer 5 — npm run test:e2e:packaged, and it needs a build first

@@ -100,8 +100,8 @@ function spawnGit(args, { cwd, input, extraEnv, spawn = nodeSpawn } = {}) {
 
 /**
  * Runs Git to completion. Resolves with `{ status, stdout, stderr }` where
- * stdout is a Buffer (porcelain `-z` output is bytes, and paths are not
- * guaranteed to be UTF-8) and stderr is a string.
+ * stdout is a Buffer (blob contents are bytes, and `-z` output carries NULs)
+ * and stderr is a string.
  *
  * Rejects with a GitError carrying `code`, `signal`, `stderr`, `args` and
  * `cwd` when the exit status is not in `okCodes`. Query commands that answer

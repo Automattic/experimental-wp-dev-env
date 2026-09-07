@@ -6,12 +6,11 @@ const { PassThrough } = require('node:stream');
 
 const { spawnGit, runGit, GitError, subcommandOf, safeDirectoryArgs } = require('../../src/git-run.cjs');
 const { BASE_ARGS } = require('../../src/git-binary.cjs');
-const { git, tempDir } = require('./helpers/git.cjs');
 
 // The runner's contract, checked without a Git: `spawn` is injected and hands
 // back a scripted child, so argv, stdio, exit-code handling, overflow and the
-// spawn-failure path are all exercised on any machine. One test at the end
-// runs the real binary to prove the pieces meet.
+// spawn-failure path are all exercised on any machine. The real binary is
+// driven in git-run.integration.test.cjs.
 
 function fakeChild({ stdout = [], stderr = [], status = 0, signal = null, error = null, delay = 0 } = {}) {
 	const child = new EventEmitter();
@@ -143,6 +142,8 @@ test('a spawn failure is a GitError with the system code, not an unhandled event
 	);
 });
 
+// The fake child has no pid, so this proves the rejection and that reading
+// stops, not that the kill was sent; killChildTree's own tests cover that.
 test('output past maxStdout rejects rather than growing without bound', async () => {
 	const { spawn, calls } = recordingSpawn({ stdout: [Buffer.alloc(600, 0x41), Buffer.alloc(600, 0x41)], status: 0 });
 	await assert.rejects(
@@ -150,17 +151,4 @@ test('output past maxStdout rejects rather than growing without bound', async ()
 		(error) => error instanceof GitError && error.code === 'stdout-overflow'
 	);
 	assert.equal(calls.length, 1);
-});
-
-test('the real binary answers through runGit inside a repository', async (t) => {
-	const dir = tempDir(t, 'toolkit-git-run-');
-	assert.equal(git(['init', '-b', 'trunk'], dir).status, 0);
-	const { status, stdout } = await runGit(['rev-parse', '--git-dir'], { cwd: dir });
-	assert.equal(status, 0);
-	assert.equal(stdout.toString('utf8').trim(), '.git');
-
-	const missing = await runGit(['rev-parse', '--verify', '--quiet', 'refs/heads/nope'], { cwd: dir, okCodes: [0, 1] });
-	assert.equal(missing.status, 1);
-
-	await assert.rejects(runGit(['rev-parse', '--verify', 'refs/heads/nope'], { cwd: dir }), (error) => error.code === 128);
 });
