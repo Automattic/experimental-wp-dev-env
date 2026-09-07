@@ -67,7 +67,7 @@ Every ticket you link gets its own branch inside the site and keeps its own work
 
 ## How it works under the hood
 
-- Git operations are handled by `isomorphic-git`, a pure JavaScript implementation of Git.
+- Git operations run on a Git binary bundled inside the app (never one installed on your machine). Some of the older flows still use `isomorphic-git`, a pure JavaScript implementation, while they are being moved over.
 - Node scripts and npm commands run on the Node.js runtime bundled with the Electron app. A small shim directory is injected into the `PATH` so subprocesses find `node`, `npm`, and `npx` without a system install.
 - The WordPress server runs on `@wp-playground/cli` from [WordPress Playground](https://wordpress.github.io/wordpress-playground/), backed by SQLite.
 - Patches are generated with the `diff` npm package.

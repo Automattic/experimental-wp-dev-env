@@ -5,8 +5,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const fse = require('fs-extra');
 const nodeHttp = require('http');
-const git = require('isomorphic-git');
-const http = require('isomorphic-git/http/node');
 const JsDiff = require('diff');
 const { spawn } = require('child_process');
 const { SMTPServer } = require('smtp-server');
@@ -36,6 +34,7 @@ const { getClientId: getGithubClientId, requestDeviceCode, pollForToken, fetchVi
 const { openPullRequest, buildPullRequestBody, testMode: githubTestMode } = require('./github-pr.cjs');
 const { buildPullRequestEntries } = require('./pr-files.cjs');
 const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode } = require('./git-read.cjs');
+const { cloneSite } = require('./git-clone.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
 const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
 const { deleteRegisteredSite, revealRegisteredSite, clearRegisteredSiteLog } = require('./site-registry');
@@ -248,6 +247,10 @@ function findAvailableDirName(rootDir, baseName) {
 
 /** @type {Record<string, import('child_process').ChildProcess>} */
 const runningInstalls = {};
+// The clone each site being created is running, keyed by its directory:
+// liveness only (setup-tracker.js has the boundary), so the quit sweep can
+// end a clone the same way it ends an install.
+const runningClones = new Map();
 /** @type {Record<string, import('child_process').ChildProcess>} */
 const runningScripts = {};
 // Children the user explicitly stopped, so a failed run is not retried.
@@ -1768,6 +1771,7 @@ app.on('before-quit', () => {
 	const children = [
 		...Object.values(runningInstalls),
 		...Object.values(runningScripts),
+		...runningClones.values(),
 		...Object.values(playgroundServers).map((s) => s.child),
 		...(playgroundWebServer?.child ? [playgroundWebServer.child] : [])
 	];
@@ -1904,21 +1908,26 @@ ipcMain.handle('wordpress:setup', async (event, destDir, options = {}) => {
 	// `track` releases the entry however this ends.
 	return setupTracker.track(siteDir, async () => {
 		event.sender.send('download:status', { phase: 'cloning', target: siteDir });
-		await git.clone({
-			http,
-			fs,
-			url: WORDPRESS_GIT_URL,
-			dir: siteDir,
-			singleBranch: true,
-			depth: 1,
-			ref: 'trunk',
-			onProgress: (evt) => {
-				// evt: {phase,total,loaded,lengthComputable} - forward as terminal-like output
-				const msg = `${evt.phase || 'clone'} ${evt.loaded || 0}/${evt.total || 0}`;
-				event.sender.send('download:progress', { target: siteDir, message: msg });
-			}
-		});
-		await ensureAutocrlf(siteDir);
+		try {
+			await cloneSite({
+				url: WORDPRESS_GIT_URL,
+				dir: siteDir,
+				onChild: (child) => { runningClones.set(siteDir, child); },
+				onProgress: (evt) => {
+					// Same line the old engine produced, so the terminal panel reads
+					// the same: `<phase> <loaded>/<total>`.
+					event.sender.send('download:progress', { target: siteDir, message: `${evt.phase} ${evt.loaded}/${evt.total}` });
+				}
+			});
+		} catch (error) {
+			// The directory is the app's own, picked so it did not exist before
+			// (findAvailableDirName), and a half-written clone in it would be
+			// adopted as a site by the next "Add a site" (#180's other half).
+			await removeTree(siteDir).catch((e) => logError('wordpress:setup', `removing the failed clone: ${String(e && e.message ? e.message : e)}`));
+			throw error;
+		} finally {
+			runningClones.delete(siteDir);
+		}
 		await ensureLocalExcludes(siteDir);
 
 		const s = await getStore();
@@ -1969,7 +1978,7 @@ ipcMain.handle('sites:delete', async (_e, sitePath) => {
 	const allowed = await deleteRegisteredSite(sitePath, {
 		sites: s.get('sites'),
 		// A site whose clone is still running is refused outright, registered or
-		// not: `remove` would be deleting a tree isomorphic-git is writing into.
+		// not: `remove` would be deleting a tree the clone is still writing into.
 		pending: setupTracker.paths(),
 		forget: () => {
 			s.set('sites', s.get('sites').filter((p) => p !== sitePath));

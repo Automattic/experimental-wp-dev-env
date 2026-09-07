@@ -3538,9 +3538,9 @@ test('dir:show refuses a path the registry does not hold, and logs it', async ()
 // --- creating a site, and opening it while it is still being created -----
 //
 // This handler was listed as NOT_REACHABLE, on the grounds that it clones
-// wordpress-develop over the network. It does not have to: `resolveStubs`
-// resolves bare packages through `require.resolve`, so `isomorphic-git` is
-// stubbable like any other module and the whole handler runs offline. That
+// wordpress-develop over the network. It does not have to: the clone lives in
+// its own module (git-clone.cjs, #385), so `cloneSite` is stubbable like any
+// other and the whole handler runs offline. That
 // matters here beyond coverage — #180 is a bug about *when* things are true
 // during the clone, and only a test that can be inside the clone can see it.
 
@@ -3564,8 +3564,8 @@ async function runSetup({ duringClone, cloneFails = false, existing = [], extraS
 		stubs: {
 			...silentLogging(),
 			...settings.stubs,
-			'isomorphic-git': { clone },
-			'./trunk-update': { ensureAutocrlf: async () => {}, readTrunkInfo: async () => ({ trunkOid: 'abc', trunkDate: '2026-01-01' }) },
+			'./git-clone.cjs': { cloneSite: clone },
+			'./trunk-update': { readTrunkInfo: async () => ({ trunkOid: 'abc', trunkDate: '2026-01-01' }) },
 			...extraStubs
 		}
 	});

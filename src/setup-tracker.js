@@ -13,7 +13,7 @@
 // unregister-on-failure path cannot catch — a phantom site for a directory that
 // was never finished, which is the thing AGENTS.md's architecture rules single
 // out. It would also widen the allow-list for the recursive delete in
-// `sites:delete` to include a tree isomorphic-git is writing into.
+// `sites:delete` to include a tree the clone is still writing into.
 //
 // So this is the other half of the boundary, and the distinction it draws is
 // **liveness against truth**. The store answers "which sites exist"; this
