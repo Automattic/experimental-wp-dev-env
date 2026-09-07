@@ -338,7 +338,7 @@ test( 'the packaged Git tree carries neither the credential manager nor git-lfs'
 	const walk = ( dir ) => {
 		for ( const entry of fs.readdirSync( dir, { withFileTypes: true } ) ) {
 			const full = path.join( dir, entry.name );
-			if ( /^git-credential-manager|^git-credential-helper-selector|^git-lfs|^Avalonia|SkiaSharp|^gcmcore|^msalruntime/.test( entry.name ) ) {
+			if ( /^git-credential-manager|^git-credential-helper-selector|^git-lfs|^createdump|^Avalonia|SkiaSharp|HarfBuzzSharp|^gcmcore|^msalruntime|^av_libglesv2|^(Microsoft|System|Atlassian|GitHub|GitLab|MicroCom)\..*\.dll$/.test( entry.name ) ) {
 				offenders.push( full );
 			} else if ( entry.isDirectory() ) {
 				walk( full );
