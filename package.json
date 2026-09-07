@@ -53,7 +53,10 @@
       "!node_modules/dugite/git/libexec/git-core/{cs,de,es,fr,it,ja,ko,pl,pt-BR,ru,tr,zh-Hans,zh-Hant}{,/**/*}",
       "!node_modules/dugite/git/{mingw64,clangarm64}/libexec/git-core/git-credential-manager*",
       "!node_modules/dugite/git/{mingw64,clangarm64}/libexec/git-core/git-lfs.exe",
-      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-lfs.exe"
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-lfs.exe",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-credential-manager*",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/doc{,/**/*}",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/share/doc{,/**/*}"
     ],
     "asarUnpack": [
       "node_modules/dugite/git/**"
@@ -98,7 +101,7 @@
     "@wp-playground/cli": "^3.1.47",
     "@xterm/xterm": "^5.5.0",
     "diff": "^5.2.0",
-    "dugite": "^3.2.3",
+    "dugite": "3.2.3",
     "electron-log": "^5.4.4",
     "electron-store": "^10.0.1",
     "extract-zip": "^2.0.1",

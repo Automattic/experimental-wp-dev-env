@@ -51,23 +51,26 @@ test('the environment pins host config off and prompting off', () => {
 	}
 });
 
-test('no GIT_* variable and no askpass reaches Git from the host', () => {
+test('no GIT_* variable and no askpass reaches Git from the host, whatever its case', () => {
+	// Windows environment names are case-insensitive: `git_dir` is GIT_DIR.
 	const env = buildGitEnv({
 		baseEnv: {
 			PATH: '/usr/bin',
 			GIT_DIR: '/somewhere/else/.git',
-			GIT_WORK_TREE: '/somewhere/else',
-			GIT_INDEX_FILE: '/somewhere/else/.git/index',
+			git_work_tree: '/somewhere/else',
+			Git_Index_File: '/somewhere/else/.git/index',
 			GIT_CONFIG_COUNT: '1',
 			GIT_CONFIG_KEY_0: 'core.hooksPath',
 			GIT_CONFIG_VALUE_0: '/somewhere/hooks',
 			GIT_ASKPASS: '/usr/local/bin/ask',
-			SSH_ASKPASS: '/usr/local/bin/ask'
+			ssh_askpass: '/usr/local/bin/ask',
+			local_git_directory: '/opt/homebrew'
 		}
 	});
-	for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_ASKPASS', 'SSH_ASKPASS']) {
+	for (const name of ['GIT_DIR', 'git_work_tree', 'Git_Index_File', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_ASKPASS', 'ssh_askpass', 'local_git_directory']) {
 		assert.equal(env[name], undefined, `${name} leaked through`);
 	}
+	assert.ok(env.GIT_EXEC_PATH.includes(BUNDLED));
 });
 
 test('a Node child environment does not leak into Git', () => {
@@ -82,14 +85,21 @@ test('a Node child environment does not leak into Git', () => {
 	assert.equal(env.NODE_OPTIONS, undefined);
 });
 
-test('a caller can add to the environment but cannot unpin it', () => {
-	const env = buildGitEnv({
-		baseEnv: {},
-		extraEnv: { GIT_TRACE: '1', GIT_CONFIG_NOSYSTEM: '0', GIT_CONFIG_GLOBAL: '/home/mentor/.gitconfig' }
-	});
+test('a caller can add to the environment but cannot unpin or redirect it', () => {
+	const env = buildGitEnv({ baseEnv: {}, extraEnv: { GIT_TRACE: '1' } });
 	assert.equal(env.GIT_TRACE, '1');
 	assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
-	assert.equal(env.GIT_CONFIG_GLOBAL, '/dev/null');
+
+	for (const extraEnv of [
+		{ GIT_CONFIG_NOSYSTEM: '0' },
+		{ git_config_global: '/home/mentor/.gitconfig' },
+		{ GIT_DIR: '/somewhere/else/.git' },
+		{ GIT_CONFIG_COUNT: '1' },
+		{ GIT_ASKPASS: '/usr/local/bin/ask' },
+		{ LOCAL_GIT_DIRECTORY: '/opt/homebrew' }
+	]) {
+		assert.throws(() => buildGitEnv({ baseEnv: {}, extraEnv }), TypeError, JSON.stringify(extraEnv));
+	}
 });
 
 test('the base arguments clear the credential helper and are frozen', () => {

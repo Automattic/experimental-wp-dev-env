@@ -22,6 +22,8 @@ const { resolveGitBinary, buildGitEnv, BASE_ARGS, SPAWN_OPTIONS } = require('../
 
 const BINARY = resolveGitBinary();
 const ENV = buildGitEnv();
+// The Git dugite@3.2.3 embeds; a different one here means a different tree.
+const GIT_VERSION = /^git version 2\.53\.0(?:$|[.\s])/;
 
 function git(args, cwd) {
 	const result = spawnSync(BINARY, [...BASE_ARGS, ...args], { ...SPAWN_OPTIONS, cwd, env: ENV, encoding: 'utf8' });
@@ -35,15 +37,31 @@ function git(args, cwd) {
 
 function tempDir(t, prefix) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+	t.after(() => removeRepo(dir));
 	return dir;
+}
+
+// Git writes its objects read-only, and on Windows `rmSync` answers that with
+// EPERM rather than deleting them (#381). Make everything writable first.
+function removeRepo(dir) {
+	const walk = (entry) => {
+		const stat = fs.lstatSync(entry);
+		if (stat.isDirectory()) {
+			fs.chmodSync(entry, 0o777);
+			for (const child of fs.readdirSync(entry)) walk(path.join(entry, child));
+		} else if (stat.isFile()) {
+			fs.chmodSync(entry, 0o666);
+		}
+	};
+	if (fs.existsSync(dir)) walk(dir);
+	fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
 test('the bundled binary is present and runs', () => {
 	assert.ok(fs.existsSync(BINARY), `${BINARY} is missing`);
 	const result = git(['--version'], os.tmpdir());
 	assert.equal(result.status, 0, result.stderr || result.error);
-	assert.match(result.stdout, /^git version \d/);
+	assert.match(result.stdout, GIT_VERSION);
 });
 
 test('the exec path Git was told about exists and is populated', () => {

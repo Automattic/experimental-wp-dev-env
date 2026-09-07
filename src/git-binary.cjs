@@ -27,10 +27,12 @@
 // who exported either would swap the bundled binary for whatever they point
 // at; GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE would redirect every command
 // to a repository the app never chose; GIT_CONFIG_COUNT would inject config.
-// Every `GIT_*` variable is therefore dropped before dugite sees the base env,
-// and the ones the app relies on are set from PINNED_ENV afterwards. A caller
+// Every `GIT_*` variable is therefore dropped before dugite sees the base env
+// (compared case-insensitively: Windows treats `git_dir` as GIT_DIR), and
+// the ones the app relies on are set from PINNED_ENV afterwards. A caller
 // that needs one more (GIT_TRACE while debugging, say) passes it as
-// `extraEnv`; it cannot override a pinned value.
+// `extraEnv`; naming a pinned or a redirecting variable there is a
+// programming error and throws rather than silently winning or losing.
 
 const dugite = require('dugite');
 
@@ -40,6 +42,21 @@ const NODE_ONLY_ENV = Object.freeze(['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS']);
 // Host variables, on top of every `GIT_*`, that would change which Git runs
 // or whether it stops to ask a human.
 const HOST_ONLY_ENV = Object.freeze(['LOCAL_GIT_DIRECTORY', 'SSH_ASKPASS']);
+
+// Variables a caller may not add through `extraEnv` either: each one points
+// Git at a different binary, repository or configuration, or re-enables
+// prompting. GIT_CONFIG_* covers COUNT/KEY_n/VALUE_n and PARAMETERS.
+const REDIRECT_ENV = Object.freeze([
+	...HOST_ONLY_ENV,
+	'GIT_ASKPASS',
+	'GIT_EXEC_PATH',
+	'GIT_DIR',
+	'GIT_WORK_TREE',
+	'GIT_INDEX_FILE',
+	'GIT_OBJECT_DIRECTORY',
+	'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+	'GIT_CEILING_DIRECTORIES'
+]);
 
 // Everything the bundled Git must be told. #350's second invariant read
 // forwards: a Git that picks up the host's config, or stops to ask a human
@@ -82,7 +99,8 @@ const SPAWN_OPTIONS = Object.freeze({
 function stripHostEnv(baseEnv) {
 	const base = {};
 	for (const [name, value] of Object.entries(baseEnv)) {
-		if (name.startsWith('GIT_') || NODE_ONLY_ENV.includes(name) || HOST_ONLY_ENV.includes(name)) {
+		const upper = name.toUpperCase();
+		if (upper.startsWith('GIT_') || NODE_ONLY_ENV.includes(upper) || HOST_ONLY_ENV.includes(upper)) {
 			continue;
 		}
 		base[name] = value;
@@ -90,11 +108,24 @@ function stripHostEnv(baseEnv) {
 	return base;
 }
 
+function assertExtraEnv(extraEnv) {
+	for (const name of Object.keys(extraEnv)) {
+		const upper = name.toUpperCase();
+		if (upper in PINNED_ENV) {
+			throw new TypeError(`${name} is pinned by git-binary.cjs and cannot be overridden`);
+		}
+		if (REDIRECT_ENV.includes(upper) || upper.startsWith('GIT_CONFIG_')) {
+			throw new TypeError(`${name} would redirect or reconfigure the bundled Git; pass it as an argument instead`);
+		}
+	}
+}
+
 function resolveGitBinary({ processEnv = process.env } = {}) {
 	return dugite.setupEnvironment({}, stripHostEnv(processEnv)).gitLocation;
 }
 
 function buildGitEnv({ baseEnv = process.env, extraEnv = {} } = {}) {
+	assertExtraEnv(extraEnv);
 	const { env } = dugite.setupEnvironment({ ...extraEnv, ...PINNED_ENV }, stripHostEnv(baseEnv));
 	return env;
 }
@@ -106,5 +137,6 @@ module.exports = {
 	SPAWN_OPTIONS,
 	PINNED_ENV,
 	NODE_ONLY_ENV,
-	HOST_ONLY_ENV
+	HOST_ONLY_ENV,
+	REDIRECT_ENV
 };

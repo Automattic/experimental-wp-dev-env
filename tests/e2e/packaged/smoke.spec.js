@@ -317,7 +317,7 @@ test( 'the packaged app can spawn the bundled Git', async () => {
 	expect( result.binary, 'resolved into app.asar rather than app.asar.unpacked' ).toContain( 'app.asar.unpacked' );
 	expect( result.binaryExists, `${ result.binary } is not on disk` ).toBe( true );
 	expect( result.version, JSON.stringify( result.version ) ).toHaveProperty( 'status', 0 );
-	expect( result.version.stdout ).toMatch( /^git version \d/ );
+	expect( result.version.stdout ).toMatch( /^git version 2\.53\.0(?:$|[.\s])/ );
 	expect( result.execPathExists, `exec path ${ result.execPath.stdout } is missing` ).toBe( true );
 } );
 
