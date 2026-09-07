@@ -55,6 +55,10 @@
       "!node_modules/dugite/git/{mingw64,clangarm64}/libexec/git-core/git-lfs.exe",
       "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-lfs.exe",
       "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-credential-manager*",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-credential-helper-selector.exe",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/{Avalonia,Microsoft,System,Atlassian}*.dll",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/{gcmcore,GitHub,GitLab,MicroCom.Runtime,msalruntime,av_libglesv2}.dll",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/*{SkiaSharp,HarfBuzzSharp}*.dll",
       "!node_modules/dugite/git/{mingw64,clangarm64}/doc{,/**/*}",
       "!node_modules/dugite/git/{mingw64,clangarm64}/share/doc{,/**/*}"
     ],
