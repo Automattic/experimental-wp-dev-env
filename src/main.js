@@ -1093,8 +1093,16 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
  * A site the old engine made is read but never written (#385): the binary and
  * isomorphic-git disagree on what a shallow checkout may do, and the decision
  * was a new site rather than a migration. Same shape as `midSwitchBlock`, so
- * the handlers and the renderer treat both refusals alike. Delete and the
- * patch export are deliberately not behind it: they are how the work leaves.
+ * the handlers and the renderer treat both refusals alike. Delete, the patch
+ * export and opening a pull request are deliberately not behind it: they are
+ * how the work leaves, and none of them touches the checkout. Two writes
+ * outside the checkout still reach such a site on purpose: `site:status`
+ * keeps `.git/info/exclude` current, and the export's `ensureAutocrlf` may
+ * write `core.autocrlf` on Windows until the patch flow moves (#385).
+ *
+ * The export covers the branch that is checked out. Work parked on another
+ * ticket's branch needs a switch to reach, and the switch is refused, so it
+ * stays where it is; the docs say so.
  *
  * @param {string} sitePath
  */

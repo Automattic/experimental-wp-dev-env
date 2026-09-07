@@ -37,3 +37,5 @@ Work that is already parked on a ticket branch is never what this dialog is offe
 ## Sites created by an earlier version
 
 A site created before the app shipped its own Git shows a red banner at the top of its card: "This site was created by an earlier version of the app." The app now clones sites with the Git it bundles, and the shallow clones the old engine made cannot be written safely by it, so linking tickets, applying patches, discarding changes and updating trunk are refused on that site. Reading still works: the ticket panel and the patch export show what is there. The way out is the banner's **Create site** button: export your work as a patch, create a new site, apply the patch there, then delete the old site from its More menu.
+
+The export covers the ticket that is currently linked. Work parked on another ticket's branch in that site cannot be reached without switching to it, and switching is one of the refused actions, so it stays in the old site's repository. A Git client can still read it there (`git log ticket/<number>`) if you need it back.
