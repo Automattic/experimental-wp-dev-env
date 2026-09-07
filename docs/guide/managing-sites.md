@@ -33,3 +33,7 @@ If you start **Update to latest trunk** while the site has edits loose in the wo
 Confirm with **Save patch & update** or **Discard & update**, or **Cancel** to keep everything as it is. If you meant to keep the changes as a contribution instead, see [Submitting your changes](./submitting-changes).
 
 Work that is already parked on a ticket branch is never what this dialog is offering to discard — the update carries it across untouched. See [Updating while you are on a ticket](./trunk-updates#updating-while-you-are-on-a-ticket).
+
+## Sites created by an earlier version
+
+A site created before the app shipped its own Git shows a red banner at the top of its card: "This site was created by an earlier version of the app." The app now clones sites with the Git it bundles, and the shallow clones the old engine made cannot be written safely by it, so linking tickets, applying patches, discarding changes and updating trunk are refused on that site. Reading still works: the ticket panel and the patch export show what is there. The way out is the banner's **Create site** button: export your work as a patch, create a new site, apply the patch there, then delete the old site from its More menu.

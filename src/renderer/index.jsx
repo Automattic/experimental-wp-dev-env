@@ -43,6 +43,7 @@ import { ticketUrl, attachUrl } from './trac-ticket.cjs';
 import { adminUrl, adminerUrl } from './site-urls.cjs';
 import { ticketBranchRows, ticketListCard } from './ticket-branch-list.cjs';
 import { ticketTrunkNotice } from './ticket-trunk-notice.cjs';
+import { legacySiteNotice } from './legacy-site.cjs';
 import { describeSwitchProgress } from '../switch-progress.cjs';
 import { highlightDiff, hasDiffLines } from './diff-highlight.cjs';
 import { highlightLog } from './log-highlight.cjs';
@@ -933,6 +934,7 @@ function App() {
                       onSiteMetaPatch={onSiteMetaPatch}
                       onDelete={onDelete}
                       onRename={onRename}
+                      onCreateSite={() => setCreateModalOpen(true)}
                       editor={detectedApplications}
                       wporg={wporg}
                       isPending={pendingSites.includes(s)}
@@ -1193,7 +1195,7 @@ function TerminalCommandLink({ command, onPrefill, disabled }) {
   );
 }
 
-function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSiteMetaPatch, onDelete, onRename, editor, wporg, isPending = false, setupLogs = '', isActive = false, switchProgress = null, carriedWork = null, onClearSwitchNotices = null }) {
+function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSiteMetaPatch, onDelete, onRename, onCreateSite = null, editor, wporg, isPending = false, setupLogs = '', isActive = false, switchProgress = null, carriedWork = null, onClearSwitchNotices = null }) {
   // The window's confirmation queue (#253): confirm(message) after an action
   // completes, so the outcome is announced rather than left silent or buried in
   // the terminal.
@@ -1301,6 +1303,8 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   // Trac ticket association (#109)
   const [tracTicket, setTracTicket] = useState(null);
   const [ticketBehindTrunk, setTicketBehindTrunk] = useState(false);
+  // A site the old engine made (#385): read, never written.
+  const [legacy, setLegacy] = useState(false);
   const [ticketInput, setTicketInput] = useState('');
   const [ticketError, setTicketError] = useState('');
   const [ticketSaving, setTicketSaving] = useState(false);
@@ -1653,6 +1657,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       setUpdateIncomplete(Boolean(s?.updateIncomplete));
       setTracTicket(s?.tracTicket || null);
       setTicketBehindTrunk(Boolean(s?.ticketBehindTrunk));
+      setLegacy(Boolean(s?.legacy));
       setAppliedPatch(s?.appliedPatch || null);
       if (metaPatchRef.current) {
         // A null trunkDate here means the git read failed (e.g. clone still
@@ -2701,6 +2706,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   // for the buttons that would give it somewhere to go.
   const changesNote = changesNoteParts({ ...(worktreeDirty || {}), tracTicket });
   const staleTicketNotice = ticketTrunkNotice({ ticketId: tracTicket, behind: ticketBehindTrunk });
+  const legacyNotice = legacySiteNotice({ legacy });
   const updateSteps = planUpdateSteps({ lockfileChanged: updateLockfileChanged });
   const updateStepStates = updateStepStatuses(updateSteps, updateState);
 
@@ -4279,6 +4285,16 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
           />
         </div>
       </Flex>
+      {legacyNotice && !isPending ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '12px 16px', background: '#fcf0f1', border: '1px solid #d63638', borderRadius: 8, fontSize: 13, color: '#8a1f21' }}>
+          <span style={{ flex: '1 1 320px' }}>
+            <strong>{legacyNotice.title}</strong> {legacyNotice.body}
+          </span>
+          {onCreateSite ? (
+            <Button variant="primary" onClick={onCreateSite}>Create site</Button>
+          ) : null}
+        </div>
+      ) : null}
       {updateIncomplete && !isUpdating ? (
         <div {...cueProps('retry-install-build')} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '12px 16px', background: '#fcf0f1', border: '1px solid #d63638', borderRadius: 8, fontSize: 13, color: '#8a1f21' }}>
           <span style={{ flex: '1 1 320px' }}>

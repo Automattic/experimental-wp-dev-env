@@ -3094,6 +3094,140 @@ test('unlinking under a mid-switch marker returns to trunk without parking, from
 	assert.equal(settings.values.siteMeta['/sites/wp'].currentBranch, 'trunk');
 });
 
+// --- legacy sites -> src/git-read.cjs isLegacySite (#385) ------------------
+//
+// A site the old engine made is read but never written. Every handler that
+// would write the checkout refuses with the same shape midSwitchBlock uses,
+// before it reaches the module that would do the writing.
+
+function legacyStubs(settings, extra = {}) {
+	return {
+		...silentLogging(),
+		...settings.stubs,
+		'./git-read.cjs': { isLegacySite: async () => true },
+		...extra
+	};
+}
+
+test('the branch handlers refuse a legacy site before touching ticket-branches (#385)', async () => {
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const deleteTicketBranch = spy(async () => ({ deleted: true }));
+	const startTicketBranch = spy(async () => ({ started: true }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { baseOid: 'abc' } }, currentBranch: 'ticket/61002', tracTicket: 61002 } }
+	});
+	const main = loadMain({
+		stubs: legacyStubs(settings, { './ticket-branches': { switchToBranch, deleteTicketBranch, startTicketBranch } })
+	});
+
+	for (const [channel, ...args] of [
+		['branches:switch', '/sites/wp', 'trunk'],
+		['branches:delete', '/sites/wp', 'ticket/61002'],
+		['sites:set-ticket', '/sites/wp', '59234'],
+		['sites:set-ticket', '/sites/wp', '']
+	]) {
+		const result = await main.invoke(channel, ...args);
+		assert.equal(result.ok, false, channel);
+		assert.equal(result.code, 'legacy-site', channel);
+		assert.match(result.error, /earlier version of the app/, channel);
+	}
+	assert.deepEqual(switchToBranch.calls, []);
+	assert.deepEqual(deleteTicketBranch.calls, []);
+	assert.deepEqual(startTicketBranch.calls, []);
+	// The unlink path must not have moved the metadata either.
+	assert.equal(settings.values.siteMeta['/sites/wp'].tracTicket, 61002);
+});
+
+test('discarding refuses a legacy site before touching trunk-update (#385)', async () => {
+	const discardChanges = spy(async () => {});
+	const discardToBase = spy(async () => {});
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { baseOid: 'abc', appliedPatch: { label: 'p', text: 'X' } } }, currentBranch: 'ticket/61002', tracTicket: 61002 } }
+	});
+	const main = loadMain({
+		stubs: legacyStubs(settings, { './trunk-update': { discardChanges, discardToBase } })
+	});
+
+	for (const channel of ['git:discard-changes', 'git:discard-to-base']) {
+		const result = await main.invoke(channel, '/sites/wp');
+		assert.equal(result.code, 'legacy-site', channel);
+	}
+	assert.deepEqual(discardChanges.calls, []);
+	assert.deepEqual(discardToBase.calls, []);
+	// The applied-patch record stays: nothing was discarded.
+	assert.equal(settings.values.siteMeta['/sites/wp'].branches['ticket/61002'].appliedPatch.text, 'X');
+});
+
+test('the trunk update refuses a legacy site on its done channel (#385)', async () => {
+	const updateToLatestTrunk = spy(async () => ({}));
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': { branches: {} } } });
+	const main = loadMain({ stubs: legacyStubs(settings, { './trunk-update': { updateToLatestTrunk } }) });
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	const done = await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	assert.equal(done.ok, false);
+	assert.equal(done.code, 'legacy-site');
+	assert.deepEqual(updateToLatestTrunk.calls, []);
+	// The sentence also reaches the terminal the flow streams to.
+	assert.ok(event.sent.some((m) => m.channel === 'git:update-trunk:log' && /earlier version of the app/.test(m.payload.data)));
+});
+
+test('applying and reverting a patch refuse a legacy site before patch-apply (#385)', async () => {
+	const applyPatchToDir = spy(async () => ({ ok: true, applied: [], skipped: [] }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { appliedPatch: { label: 'first', text: 'X' } } }
+	});
+	const main = loadMain({ stubs: legacyStubs(settings, { './patch-apply': { applyPatchToDir } }) });
+
+	for (const options of [{ patchText: 'P' }, { reverse: true }]) {
+		const event = createIpcEvent();
+		const { applyId } = await main.invokeWith('git:apply-patch', event, '/sites/wp', options);
+		const done = await applyDone(event, applyId);
+		assert.equal(done.code, 'legacy-site', JSON.stringify(options));
+	}
+	assert.deepEqual(applyPatchToDir.calls, []);
+});
+
+test('deleting a legacy site still goes through, and status says the site is legacy (#385)', async () => {
+	const deleteRegisteredSite = spy(async () => true);
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': {} } });
+	const main = loadMain({
+		stubs: legacyStubs(settings, {
+			'./site-registry': { deleteRegisteredSite },
+			'./trunk-update': { readTrunkInfo: async () => ({ trunkOid: 'x', trunkDate: 'd' }) },
+			'./ticket-branches': { currentBranchName: async () => 'trunk' }
+		})
+	});
+
+	const status = await main.invoke('site:status', '/sites/wp');
+	assert.equal(status.legacy, true);
+
+	await main.invoke('sites:delete', '/sites/wp');
+	assert.equal(deleteRegisteredSite.calls.length, 1);
+});
+
+test('a detector that fails leaves the site usable rather than flagged (#385)', async () => {
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': {} } });
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./git-read.cjs': { isLegacySite: async () => { throw new Error('git died'); } },
+			'./trunk-update': { readTrunkInfo: async () => ({ trunkOid: 'x', trunkDate: 'd' }) },
+			'./ticket-branches': { currentBranchName: async () => 'trunk' }
+		}
+	});
+
+	const status = await main.invoke('site:status', '/sites/wp');
+	assert.equal(status.legacy, false);
+	assert.equal(status.trunkOid, 'x', 'the rest of the status is still answered');
+});
+
 test('a site that cannot be migrated is retried, not stranded on the old shape (issue #108)', async () => {
 	const startTicketBranch = spy(async () => { throw new Error('not a repository'); });
 	const listTicketBranches = spy(async () => { throw new Error('not a repository'); });
