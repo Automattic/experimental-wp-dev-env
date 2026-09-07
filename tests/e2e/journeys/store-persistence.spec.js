@@ -93,6 +93,11 @@ test( 'an applied patch is still applied after a restart, and still revertable',
 	await expect( reopened.getByRole( 'button', { name: 'Revert this patch', exact: true } ) ).toHaveCount( 0, {
 		timeout: 60_000,
 	} );
+	// The button leaves the moment the revert starts, so it is not the signal
+	// that the revert finished. The next-step line is: it names the operation
+	// while it runs and moves on once the status has been reloaded, which
+	// happens after the checkout and the record are both written.
+	await expect( reopened.getByText( 'A patch is being applied or reverted.' ) ).toHaveCount( 0, { timeout: 60_000 } );
 	expect( read( site.dir, LOGIN ) ).toBe( `${ TRUNK_LOGIN }\n` );
 } );
 
