@@ -43,7 +43,20 @@
     },
     "files": [
       "!vendor{,/**/*}",
-      "!.codesigning{,/**/*}"
+      "!.codesigning{,/**/*}",
+      "!node_modules/dugite/git/libexec/git-core/*.dll",
+      "!node_modules/dugite/git/libexec/git-core/*.dylib",
+      "!node_modules/dugite/git/libexec/git-core/*.json",
+      "!node_modules/dugite/git/libexec/git-core/git-credential-manager",
+      "!node_modules/dugite/git/libexec/git-core/git-lfs",
+      "!node_modules/dugite/git/libexec/git-core/createdump",
+      "!node_modules/dugite/git/libexec/git-core/{cs,de,es,fr,it,ja,ko,pl,pt-BR,ru,tr,zh-Hans,zh-Hant}{,/**/*}",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/libexec/git-core/git-credential-manager*",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/libexec/git-core/git-lfs.exe",
+      "!node_modules/dugite/git/{mingw64,clangarm64}/bin/git-lfs.exe"
+    ],
+    "asarUnpack": [
+      "node_modules/dugite/git/**"
     ],
     "icon": "build/icon.png",
     "linux": {
@@ -85,6 +98,7 @@
     "@wp-playground/cli": "^3.1.47",
     "@xterm/xterm": "^5.5.0",
     "diff": "^5.2.0",
+    "dugite": "^3.2.3",
     "electron-log": "^5.4.4",
     "electron-store": "^10.0.1",
     "extract-zip": "^2.0.1",
@@ -108,8 +122,9 @@
     "playwright-core": "^1.62.1"
   },
   "allowScripts": {
-    "electron@43.2.0": true,
+    "dugite@3.2.3": true,
     "electron-winstaller@5.4.0": true,
+    "electron@43.2.0": true,
     "esbuild@0.23.1": true,
     "fs-ext-extra-prebuilt@2.2.7": true
   }
