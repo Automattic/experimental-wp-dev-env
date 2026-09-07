@@ -34,6 +34,33 @@ test('a host that points at its own Git still gets the bundled one', () => {
 	assert.equal(env.LOCAL_GIT_DIRECTORY, undefined);
 });
 
+test('a host that points at its own Git through the real process env still gets the bundled one', () => {
+	// The test above hands the module a base env with the variables absent,
+	// which is exactly the case dugite's resolvers answer from process.env:
+	// their parameters default to it, so a stripped variable is read back from
+	// the host. This one sets the real process env, the way an exported
+	// variable reaches the app, and asks with no base env at all.
+	const saved = { LOCAL_GIT_DIRECTORY: process.env.LOCAL_GIT_DIRECTORY, GIT_EXEC_PATH: process.env.GIT_EXEC_PATH };
+	process.env.LOCAL_GIT_DIRECTORY = path.join(path.sep, 'review-host-git');
+	process.env.GIT_EXEC_PATH = path.join(path.sep, 'review-host-helpers');
+	try {
+		const binary = resolveGitBinary();
+		assert.ok(binary.includes(BUNDLED), `${binary} was taken from the process env`);
+		const env = buildGitEnv();
+		assert.ok(env.GIT_EXEC_PATH.includes(BUNDLED), `${env.GIT_EXEC_PATH} was taken from the process env`);
+		assert.equal(env.LOCAL_GIT_DIRECTORY, undefined);
+		// And the neutralised pair leaves no empty string behind (Windows may
+		// drop those from the block): one is removed, the other resolved. The
+		// rest of the env is the host's, empty values and all.
+		assert.notEqual(env.GIT_EXEC_PATH, '');
+		assert.ok(!('LOCAL_GIT_DIRECTORY' in env));
+	} finally {
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name]; else process.env[name] = value;
+		}
+	}
+});
+
 test('the environment pins host config off and prompting off', () => {
 	const env = buildGitEnv({ baseEnv: { HOME: '/home/mentor', PATH: '/usr/bin' } });
 	assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');

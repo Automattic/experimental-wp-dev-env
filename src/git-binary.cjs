@@ -120,14 +120,31 @@ function assertExtraEnv(extraEnv) {
 	}
 }
 
+// Stripping is not enough for the two variables dugite resolves the binary
+// from. Its resolvers (`resolveGitDir`, `resolveGitExecPath`) take the value
+// they were handed as a parameter with `process.env` as the default, so a
+// variable absent from the base env is read straight back from the real
+// process environment, and the mentor's exported LOCAL_GIT_DIRECTORY wins
+// after all. Both are therefore present and empty while dugite resolves:
+// empty is a value, so the default never applies, and empty is falsy, so
+// dugite falls through to the embedded tree. GIT_EXEC_PATH comes back set
+// to the bundled helpers; the empty LOCAL_GIT_DIRECTORY is removed from the
+// result, so no empty string reaches a Windows environment block.
+const NEUTRAL_ENV = Object.freeze({ LOCAL_GIT_DIRECTORY: '', GIT_EXEC_PATH: '' });
+
+function setupBundled(environmentVariables, baseEnv) {
+	const { env, gitLocation } = dugite.setupEnvironment({ ...environmentVariables, ...NEUTRAL_ENV, ...PINNED_ENV }, stripHostEnv(baseEnv));
+	delete env.LOCAL_GIT_DIRECTORY;
+	return { env, gitLocation };
+}
+
 function resolveGitBinary({ processEnv = process.env } = {}) {
-	return dugite.setupEnvironment({}, stripHostEnv(processEnv)).gitLocation;
+	return setupBundled({}, processEnv).gitLocation;
 }
 
 function buildGitEnv({ baseEnv = process.env, extraEnv = {} } = {}) {
 	assertExtraEnv(extraEnv);
-	const { env } = dugite.setupEnvironment({ ...extraEnv, ...PINNED_ENV }, stripHostEnv(baseEnv));
-	return env;
+	return setupBundled(extraEnv, baseEnv).env;
 }
 
 module.exports = {
