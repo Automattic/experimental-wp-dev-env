@@ -2818,6 +2818,9 @@ test('branches:switch delegates to ticket-branches and records the new active br
 
 	assert.equal(switchToBranch.calls[0][1], 'ticket/61002');
 	assert.equal(switchToBranch.calls[0][2].baseOid, 'abc', 'the branch being left is parked onto its own branch point');
+	// The checkout runs as a child of its own, and quitting mid-switch has to
+	// end it: the handler hands the module a way to register it for the sweep.
+	assert.equal(typeof switchToBranch.calls[0][2].onChild, 'function');
 	assert.equal(result.parked, true);
 	// The ticket the rest of the app reads has to follow the branch, or the PR
 	// list and the attachment panel would still be showing the old ticket's.
@@ -2842,7 +2845,9 @@ test('branches:delete goes through ticket-branches and forgets the branch contex
 
 	const result = await main.invoke('branches:delete', '/sites/wp', 'ticket/61002');
 
-	assert.deepEqual(deleteTicketBranch.calls, [['/sites/wp', 'ticket/61002']]);
+	assert.deepEqual(deleteTicketBranch.calls.map(([dir, ref]) => [dir, ref]), [['/sites/wp', 'ticket/61002']]);
+	// The delete may check trunk out, a child the quit sweep has to reach.
+	assert.equal(typeof deleteTicketBranch.calls[0][2].onChild, 'function');
 	assert.equal(result.ok, true);
 	const meta = settings.values.siteMeta['/sites/wp'];
 	assert.equal(meta.branches['ticket/61002'], undefined, 'a deleted branch must not linger in the switcher');

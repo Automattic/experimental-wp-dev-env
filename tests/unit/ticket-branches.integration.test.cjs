@@ -472,3 +472,43 @@ test('a checkout that fails is tagged with the stage and both branches (issue #3
 	assert.equal(await currentBranchName(dir), TRUNK, 'HEAD stayed where it was');
 	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n', 'and so did the worktree');
 });
+
+// The checkout is a child process the quit sweep has to be able to reach; the
+// switch and the delete both hand it out, the way the clone does.
+test('a switch and a delete hand their checkout child to the caller (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	const children = [];
+
+	await switchToBranch(dir, TRUNK, { baseOid, onChild: (child) => children.push(child) });
+	await switchToBranch(dir, ref, { baseOid, onChild: (child) => children.push(child) });
+	await deleteTicketBranch(dir, ref, { onChild: (child) => children.push(child) });
+
+	assert.equal(children.length, 3);
+	for (const child of children) assert.equal(typeof child.pid, 'number');
+});
+
+// The index states a contributor's own client leaves behind, which the status
+// rows report differently from the old engine (git-read.cjs documents each):
+// the park has to end in the same place regardless — one commit of what is on
+// disk, and a clean tree against it.
+test('a park absorbs intent-to-add, rm --cached and staged-then-reverted files into one commit of the worktree (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const { baseOid } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'intent.php'), '<?php // intent to add\n');
+	assert.equal(bundledGit(['add', '-N', 'intent.php'], dir).status, 0);
+	assert.equal(bundledGit(['rm', '--cached', '-q', 'doomed.php'], dir).status, 0, 'removed from the index, kept on disk');
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // staged\n');
+	assert.equal(bundledGit(['add', 'wp-login.php'], dir).status, 0);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
+
+	const { parked } = await parkCurrentWork(dir, { baseOid });
+
+	assert.equal(parked, true);
+	assert.equal(bundledGit(['status', '--porcelain=v2', '-z', '--untracked-files=all'], dir).stdout, '', 'clean against the WIP commit');
+	const tree = bundledGit(['ls-tree', '--name-only', 'HEAD'], dir).stdout.split('\n').sort();
+	assert.deepEqual(tree, ['.gitignore', 'doomed.php', 'intent.php', 'wp-login.php'], 'what is on disk is what was committed');
+	assert.equal(bundledGit(['show', 'HEAD:wp-login.php'], dir).stdout, '<?php // trunk', 'the reverted file was committed as it is on disk, not as it was staged');
+	assert.equal(bundledGit(['rev-list', '--count', 'HEAD'], dir).stdout, '2', 'one WIP commit on the branch point');
+});

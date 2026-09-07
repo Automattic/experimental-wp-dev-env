@@ -10,9 +10,9 @@
  * broke.
  *
  * Every command that touches the index or the worktree is prefixed with
- * `crlfArgs`, the Windows view of `core.autocrlf` that git-read.cjs gives
- * sites the old engine made; a site the binary cloned carries the value in
- * its own config and the prefix is empty.
+ * `windowsArgs`, what git-read.cjs gives sites the old engine made on Windows
+ * (the `core.autocrlf` view and `core.longpaths`); a site the binary cloned
+ * carries both in its own config, and off Windows the prefix is empty.
  *
  * Nothing here is a porcelain command with output to parse except `write-tree`
  * and `commit-tree`, which print exactly one object id; `checkout` reports its
@@ -20,7 +20,7 @@
  */
 
 const { spawnGit, runGit, GitError } = require('./git-run.cjs');
-const { crlfArgs } = require('./git-read.cjs');
+const { windowsArgs } = require('./git-read.cjs');
 const { createProgressReader, failureReason } = require('./git-progress.cjs');
 
 const oidOf = ({ stdout }) => stdout.toString('utf8').trim();
@@ -41,8 +41,8 @@ const oidOf = ({ stdout }) => stdout.toString('utf8').trim();
  */
 async function stagePaths(dir, paths, { platform = process.platform, run = runGit } = {}) {
 	if (!paths.length) return 0;
-	const crlf = await crlfArgs(dir, { platform, run });
-	await run([...crlf, '--literal-pathspecs', 'add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+	const win = await windowsArgs(dir, { platform, run });
+	await run([...win, '--literal-pathspecs', 'add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], {
 		cwd: dir,
 		input: Buffer.from(`${paths.join('\0')}\0`, 'utf8')
 	});
@@ -159,8 +159,9 @@ async function deleteBranch(dir, ref, { run = runGit } = {}) {
  * @return {Promise<{ref: string}>}
  */
 async function checkoutBranch(dir, ref, { onProgress = null, onChild = null, platform = process.platform, run = runGit, spawn } = {}) {
-	const crlf = await crlfArgs(dir, { platform, run });
-	const args = [...crlf, 'checkout', '--force', '--progress', ref];
+	const win = await windowsArgs(dir, { platform, run });
+	// No `--` before the ref: after it, checkout reads a pathspec, not a branch.
+	const args = [...win, 'checkout', '--force', '--progress', ref];
 	return new Promise((resolve, reject) => {
 		let child;
 		try {

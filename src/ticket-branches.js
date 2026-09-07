@@ -292,8 +292,10 @@ async function startTicketBranch(dir, ticketId) {
  * @param {string}   [root0.baseOid]    branch point of the branch being left
  * @param {Object}   [root0.author]
  * @param {Function} [root0.onProgress] told which stage is running (#173)
+ * @param {Function} [root0.onChild]    handed the checkout's ChildProcess, so
+ *                                      a quit can end it (killChildTree)
  */
-async function switchToBranch(dir, ref, { baseOid, author = WIP_AUTHOR, onProgress = null } = {}) {
+async function switchToBranch(dir, ref, { baseOid, author = WIP_AUTHOR, onProgress = null, onChild = null } = {}) {
 	const from = await currentBranchName(dir);
 	if (from === ref) return { switched: false, from, to: ref, parked: false };
 
@@ -334,7 +336,10 @@ async function switchToBranch(dir, ref, { baseOid, author = WIP_AUTHOR, onProgre
 	// rewrites rather than appends, put the real work out of reach. The caller
 	// has to record that and refuse to park until it is reconciled.
 	try {
-		await checkoutBranch(dir, ref, report ? { onProgress: (p) => report(mapCheckoutPhase(p)) } : {});
+		await checkoutBranch(dir, ref, {
+			...(report ? { onProgress: (p) => report(mapCheckoutPhase(p)) } : {}),
+			...(onChild ? { onChild } : {})
+		});
 	} catch (e) {
 		if (e && typeof e === 'object') {
 			e.stage = 'checkout';
@@ -357,10 +362,12 @@ async function switchToBranch(dir, ref, { baseOid, author = WIP_AUTHOR, onProgre
  * `isRegisteredSite` in site-registry.js, and for the same reason — the
  * destructive call gets a boundary in front of it rather than trusting callers.
  *
- * @param {string} dir
- * @param {string} ref
+ * @param {string}   dir
+ * @param {string}   ref
+ * @param {Object}   [root0]
+ * @param {Function} [root0.onChild] handed the checkout's ChildProcess, if one runs
  */
-async function deleteTicketBranch(dir, ref) {
+async function deleteTicketBranch(dir, ref, { onChild = null } = {}) {
 	if (ref === TRUNK || ticketIdFromRef(ref) === null) {
 		const error = new Error(`Refusing to delete ${ref === TRUNK ? 'trunk' : 'a branch the app did not create'}`);
 		error.code = 'not-a-ticket-branch';
@@ -378,7 +385,7 @@ async function deleteTicketBranch(dir, ref) {
 	// the user expects to be looking at afterwards. The checkout is forced
 	// because the branch being discarded is dirty by definition.
 	if (await currentBranchName(dir) === ref) {
-		await checkoutBranch(dir, TRUNK);
+		await checkoutBranch(dir, TRUNK, onChild ? { onChild } : {});
 	}
 	await deleteBranch(dir, ref);
 	return { deleted: true, ref };

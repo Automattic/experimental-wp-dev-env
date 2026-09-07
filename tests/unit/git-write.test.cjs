@@ -80,30 +80,31 @@ test('stagePaths with nothing to stage runs nothing', async () => {
 	assert.deepEqual(calls, []);
 });
 
-test('on Windows the CRLF view prefixes the commands that touch the index or the worktree, and only those', async () => {
+test('on Windows the CRLF view and long paths prefix the commands that touch the index or the worktree, and only those', async () => {
 	const { run, calls } = recordingRun({ stdout: 'abc\n' });
 
 	await stagePaths('C:\\Sites\\wp', ['a.php'], { platform: 'win32', run });
 	const add = calls.find((c) => c.args.includes('add'));
-	assert.deepEqual(add.args.slice(0, 2), ['-c', 'core.autocrlf=true']);
+	assert.deepEqual(add.args.slice(0, 4), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true']);
 
 	const { spawn, calls: spawns } = recordingSpawn();
 	await checkoutBranch('C:\\Sites\\wp', 'ticket/1', { platform: 'win32', run, spawn });
 	const checkout = spawns[0].args;
-	assert.deepEqual(checkout.slice(checkout.indexOf('core.autocrlf=true') - 1, checkout.indexOf('core.autocrlf=true') + 2), ['-c', 'core.autocrlf=true', 'checkout']);
+	const at = checkout.indexOf('core.autocrlf=true');
+	assert.deepEqual(checkout.slice(at - 1, at + 4), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true', 'checkout']);
 
 	// Object and ref writes see no worktree and get no prefix.
 	calls.length = 0;
 	await writeTree('C:\\Sites\\wp', { run });
 	await commitTree('C:\\Sites\\wp', { tree: 't', parent: 'p', message: 'm', author: { name: 'n', email: 'e' }, run });
 	await updateBranch('C:\\Sites\\wp', 'ticket/1', 'abc', { run });
-	for (const { args } of calls) assert.ok(!args.includes('core.autocrlf=true'), `${args.join(' ')} carries the CRLF view`);
+	for (const { args } of calls) assert.ok(!args.includes('core.autocrlf=true') && !args.includes('core.longpaths=true'), `${args.join(' ')} carries the worktree view`);
 });
 
-test('an explicit local core.autocrlf is left alone, as it is for the reads', async () => {
+test('an explicit local core.autocrlf is left alone, as it is for the reads; long paths are always asked for', async () => {
 	const { run, last } = recordingRun({ autocrlfUnset: false });
 	await stagePaths('C:\\Sites\\wp', ['a.php'], { platform: 'win32', run });
-	assert.equal(last().args[0], '--literal-pathspecs');
+	assert.deepEqual(last().args.slice(0, 3), ['-c', 'core.longpaths=true', '--literal-pathspecs']);
 });
 
 test('writeTree and commitTree return the object id Git printed, and the commit carries exactly one parent and the identity given', async () => {

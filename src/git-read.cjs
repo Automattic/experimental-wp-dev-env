@@ -251,6 +251,27 @@ async function crlfArgs(dir, { platform = process.platform, run = runGit } = {})
 }
 
 /**
+ * Everything a command that walks the worktree needs on Windows for a site
+ * the old engine made: the autocrlf view above, and `core.longpaths`, which
+ * the clone writes into a site the binary made (git-clone.cjs) and nothing
+ * wrote into the others. wordpress-develop has paths past MAX_PATH; the old
+ * engine reached them through Node's long-path-aware `fs`, and the binary
+ * refuses them with "Filename too long" unless told. Passed unconditionally
+ * on Windows: a repeated value costs nothing and saves a second config read.
+ * Off Windows both are empty.
+ *
+ * @param {string}   dir
+ * @param {Object}   [options]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]
+ * @return {Promise<string[]>} Arguments to place before the subcommand.
+ */
+async function windowsArgs(dir, { platform = process.platform, run = runGit } = {}) {
+	if (platform !== 'win32') return [];
+	return [...await crlfArgs(dir, { platform, run }), '-c', 'core.longpaths=true'];
+}
+
+/**
  * The commit a ref points at, or null when it does not resolve.
  *
  * @param {string} dir
@@ -316,7 +337,7 @@ async function listBranches(dir) {
  * @return {Promise<Array[]>}
  */
 async function statusRows(dir, { platform = process.platform, run = runGit } = {}) {
-	const crlf = await crlfArgs(dir, { platform, run });
+	const crlf = await windowsArgs(dir, { platform, run });
 	const { stdout } = await run([...crlf, 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--no-renames'], { cwd: dir });
 	return parseStatusV2Z(stdout);
 }
@@ -335,7 +356,7 @@ async function statusRows(dir, { platform = process.platform, run = runGit } = {
  * @return {Promise<Array[]>}
  */
 async function changesAgainst(dir, ref, { platform = process.platform, run = runGit } = {}) {
-	const crlf = await crlfArgs(dir, { platform, run });
+	const crlf = await windowsArgs(dir, { platform, run });
 	const diff = await run([...crlf, 'diff', '--name-status', '-z', '--no-renames', ref, '--'], { cwd: dir });
 	const others = await run([...crlf, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: dir });
 	const rows = parseNameStatusZ(diff.stdout);
@@ -411,6 +432,7 @@ module.exports = {
 	parseCatFileBatchCheck,
 	parseLsTreeZ,
 	crlfArgs,
+	windowsArgs,
 	resolveRef,
 	readCommitInfo,
 	currentBranch,
