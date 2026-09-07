@@ -287,12 +287,12 @@ test( 'the packaged app can spawn the bundled Git', async () => {
 		const appFs = nodeRequire( 'fs' );
 		const { spawnSync } = nodeRequire( 'child_process' );
 		const req = createRequire( join( app.getAppPath(), 'package.json' ) );
-		const { resolveGitBinary, buildGitEnv, SPAWN_OPTIONS } = req( './src/git-binary.cjs' );
+		const { resolveGitBinary, buildGitEnv, BASE_ARGS, SPAWN_OPTIONS } = req( './src/git-binary.cjs' );
 
 		const binary = resolveGitBinary();
 		const env = buildGitEnv();
 		const run = ( args ) => {
-			const r = spawnSync( binary, args, { ...SPAWN_OPTIONS, env, encoding: 'utf8' } );
+			const r = spawnSync( binary, [ ...BASE_ARGS, ...args ], { ...SPAWN_OPTIONS, env, encoding: 'utf8' } );
 			return {
 				status: r.status,
 				stdout: ( r.stdout || '' ).trim(),

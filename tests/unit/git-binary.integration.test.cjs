@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { resolveGitBinary, buildGitEnv, SPAWN_OPTIONS } = require('../../src/git-binary.cjs');
+const { resolveGitBinary, buildGitEnv, BASE_ARGS, SPAWN_OPTIONS } = require('../../src/git-binary.cjs');
 
 // The bundled Git actually runs, from the source tree, on whatever platform
 // runs this suite — and `npm run test:electron` repeats it on Electron's own
@@ -15,12 +15,16 @@ const { resolveGitBinary, buildGitEnv, SPAWN_OPTIONS } = require('../../src/git-
 // only affects the packaged build, but the unpacked tree these run against is
 // what that trim is applied to, so a helper Git needs that is missing here is
 // missing everywhere.
+//
+// The developer's own ~/.gitconfig is deliberately in play: buildGitEnv has
+// to keep it out (a `commit.gpgsign` there would otherwise fail the commit
+// below), and nothing here works around it.
 
 const BINARY = resolveGitBinary();
 const ENV = buildGitEnv();
 
 function git(args, cwd) {
-	const result = spawnSync(BINARY, args, { ...SPAWN_OPTIONS, cwd, env: ENV, encoding: 'utf8' });
+	const result = spawnSync(BINARY, [...BASE_ARGS, ...args], { ...SPAWN_OPTIONS, cwd, env: ENV, encoding: 'utf8' });
 	return {
 		status: result.status,
 		stdout: (result.stdout || '').trim(),
@@ -52,16 +56,20 @@ test('the exec path Git was told about exists and is populated', () => {
 	assert.ok(fs.readdirSync(result.stdout).length > 0, `${result.stdout} is empty`);
 });
 
-test('the host system gitconfig is not read', (t) => {
-	// GIT_CONFIG_NOSYSTEM is what keeps a mentor's /etc/gitconfig out. Git
-	// reports the files it would read through `config --show-origin`; with
-	// the system scope off, none of them may be a system file.
-	const dir = tempDir(t, 'toolkit-git-nosystem-');
+test('neither the host system nor the host global gitconfig is read', (t) => {
+	// GIT_CONFIG_NOSYSTEM keeps a mentor's /etc/gitconfig out and
+	// GIT_CONFIG_GLOBAL=/dev/null their ~/.gitconfig; the latter also proves
+	// that literal is accepted on this platform. Git reports the files it
+	// would read through `config --show-origin`; with both scopes off, the
+	// only entries left are the repository's own and the `-c` overrides.
+	const dir = tempDir(t, 'toolkit-git-noconfig-');
 	assert.equal(git(['init', '-b', 'trunk'], dir).status, 0);
 	const result = git(['config', '--list', '--show-origin', '--show-scope'], dir);
 	assert.equal(result.status, 0, result.stderr || result.error);
-	const systemEntries = result.stdout.split('\n').filter((line) => line.startsWith('system'));
-	assert.deepEqual(systemEntries, []);
+	const scopes = new Set(result.stdout.split('\n').filter(Boolean).map((line) => line.split('\t')[0]));
+	assert.ok(!scopes.has('system'), `system config was read:\n${result.stdout}`);
+	assert.ok(!scopes.has('global'), `global config was read:\n${result.stdout}`);
+	assert.match(result.stdout, /command\t.*credential\.helper=$/m);
 });
 
 test('a repository can be created and committed to under a path with a space', (t) => {
