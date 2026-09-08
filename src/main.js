@@ -50,6 +50,7 @@ const {
 	countChangesAgainst,
 	startTicketBranch,
 	switchToBranch,
+	resumeSwitch,
 	deleteTicketBranch
 } = require('./ticket-branches');
 const { createProgressThrottle, describeSwitchProgress } = require('./switch-progress.cjs');
@@ -1063,13 +1064,21 @@ async function activeBranch(sitePath, { migrate = false } = {}) {
  * A switch whose checkout died part-way leaves HEAD on the branch it was
  * leaving, over a worktree that is half the other branch's. Parking in that
  * state would commit the mixture over the good WIP commit, so every operation
- * that parks refuses until it is reconciled.
+ * that parks refuses until it is reconciled. Two things reconcile it, both a
+ * forced checkout with no park (`resumeSwitch`): retrying the same switch,
+ * and Unlink, which finishes on trunk whatever the marker names.
  *
  * @param {string} sitePath
+ * @param {Object} [options]
+ * @param {string} [options.retryTo] The destination being asked for.
  */
-async function midSwitchBlock(sitePath) {
+async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
     const { switchInProgress } = await readSiteMeta(sitePath);
     if (!switchInProgress) return null;
+    // The retry the sentence below asks for: the same destination again,
+    // which `resumeSwitch` finishes without parking. Any other destination
+    // would park first, and parking is what the marker forbids.
+    if (retryTo && switchInProgress.to === retryTo) return null;
     return {
         ok: false,
         code: 'switch-incomplete',
@@ -2091,11 +2100,19 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 	// back to trunk is not the same as throwing a ticket away.
 	const raw = typeof ref === 'string' ? ref.trim() : '';
 	if (!raw) {
-		const { ref: current, meta } = await activeBranch(sitePath, { migrate: true });
-		if (current !== TRUNK) {
+		const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
+		// Under a mid-switch marker the tree may be half another branch's and
+		// the work of the branch being left is already committed, so the way
+		// back to trunk is the forced checkout alone: parking here would write
+		// the mixture over that commit. Also the one exit when HEAD is on trunk
+		// already, which a switch that failed leaving trunk leaves behind.
+		const resume = Boolean(site.switchInProgress);
+		if (current !== TRUNK || resume) {
 			const progress = switchProgressReporter(event, sitePath);
 			try {
-				await withSwitchMarker(sitePath, () => switchToBranch(sitePath, TRUNK, { baseOid: meta && meta.baseOid, onProgress: progress.emit, onChild: trackGitChild(sitePath) }));
+				await withSwitchMarker(sitePath, () => (resume
+					? resumeSwitch(sitePath, TRUNK, { onProgress: progress.emit, onChild: trackGitChild(sitePath) })
+					: switchToBranch(sitePath, TRUNK, { baseOid: meta && meta.baseOid, onProgress: progress.emit, onChild: trackGitChild(sitePath) })));
 			} finally {
 				// In a finally because a switch that dies mid-checkout is exactly
 				// when the last frame it reached is worth having.
@@ -2109,10 +2126,22 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 	const parsed = parseTicketRef(raw);
 	if (!parsed.ok) return { ok: false, error: parsed.error };
 
-	const blocked = await midSwitchBlock(sitePath);
-	if (blocked) return blocked;
 	const branchRef = ticketBranchRef(parsed.id);
-	const { ref: current, meta } = await activeBranch(sitePath, { migrate: true });
+	const blocked = await midSwitchBlock(sitePath, { retryTo: branchRef });
+	if (blocked) return blocked;
+	const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
+	if (site.switchInProgress) {
+		// The retry: finish the checkout the failed switch started, no park.
+		const progress = switchProgressReporter(event, sitePath);
+		try {
+			await withSwitchMarker(sitePath, () => resumeSwitch(sitePath, branchRef, { onProgress: progress.emit, onChild: trackGitChild(sitePath) }));
+		} finally {
+			progress.flush();
+		}
+		await mergeBranchMeta(sitePath, branchRef, { lastUsedAt: new Date().toISOString() });
+		await mergeSiteMeta(sitePath, { tracTicket: parsed.id, currentBranch: branchRef });
+		return { ok: true, ticket: parsed.id, branch: branchRef };
+	}
 	if (current === branchRef) {
 		await mergeSiteMeta(sitePath, { tracTicket: parsed.id, currentBranch: branchRef });
 		return { ok: true, ticket: parsed.id, branch: branchRef };
@@ -2202,13 +2231,15 @@ ipcMain.handle('branches:list', async (_e, sitePath) => withRegisteredSite(siteP
 }));
 
 ipcMain.handle('branches:switch', async (event, sitePath, targetRef) => withRegisteredSite(sitePath, async () => {
-	const blocked = await midSwitchBlock(sitePath);
+	const blocked = await midSwitchBlock(sitePath, { retryTo: targetRef });
 	if (blocked) return blocked;
-	const { ref: current, meta } = await activeBranch(sitePath, { migrate: true });
+	const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
 	const progress = switchProgressReporter(event, sitePath);
 	let result;
 	try {
-		result = await withSwitchMarker(sitePath, () => switchToBranch(sitePath, targetRef, { baseOid: meta && meta.baseOid, onProgress: progress.emit, onChild: trackGitChild(sitePath) }));
+		result = await withSwitchMarker(sitePath, () => (site.switchInProgress
+			? resumeSwitch(sitePath, targetRef, { onProgress: progress.emit, onChild: trackGitChild(sitePath) })
+			: switchToBranch(sitePath, targetRef, { baseOid: meta && meta.baseOid, onProgress: progress.emit, onChild: trackGitChild(sitePath) })));
 	} finally {
 		progress.flush();
 	}

@@ -29,7 +29,8 @@ const {
 	parkCurrentWork,
 	startTicketBranch,
 	switchToBranch,
-	deleteTicketBranch
+	deleteTicketBranch,
+	resumeSwitch
 } = require('../../src/ticket-branches.js');
 const { describeSwitchProgress } = require('../../src/switch-progress.cjs');
 const { git: bundledGit, tempDir } = require('./helpers/git.cjs');
@@ -515,4 +516,43 @@ test('a park absorbs intent-to-add, rm --cached and staged-then-reverted files i
 	assert.deepEqual(tree, ['.gitignore', 'doomed.php', 'intent.php', 'wp-login.php'], 'what is on disk is what was committed');
 	assert.equal(bundledGit(['show', 'HEAD:wp-login.php'], dir).stdout, '<?php // trunk', 'the reverted file was committed as it is on disk, not as it was staged');
 	assert.equal(bundledGit(['rev-list', '--count', 'HEAD'], dir).stdout, '2', 'one WIP commit on the branch point');
+});
+
+// The way out of a switch that died in its checkout (#385). The branch being
+// left parked before any file moved, so finishing is the forced checkout
+// alone: parking again would write the half-swapped tree over that WIP
+// commit. Retrying to the same destination and going back to trunk are the
+// same operation with a different ref.
+test('resumeSwitch finishes a failed switch without parking the half-swapped tree over the WIP (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	await switchToBranch(dir, TRUNK, { baseOid });
+	const wip = await git.resolveRef({ fs, dir, ref });
+	// What a checkout that died part-way leaves: HEAD still on trunk, a file
+	// that already holds the destination's content, and one that does not.
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	fs.writeFileSync(path.join(dir, 'doomed.php'), 'half swapped\n');
+
+	const result = await resumeSwitch(dir, ref);
+
+	assert.deepEqual(result, { switched: true, from: TRUNK, to: ref, parked: false });
+	assert.equal(await currentBranchName(dir), ref);
+	assert.equal(await git.resolveRef({ fs, dir, ref }), wip, 'the WIP commit was not rewritten');
+	assert.equal(read(dir, 'wp-login.php'), '<?php // work\n');
+	assert.equal(await hasChangesAgainst(dir), false, 'the tree is the destination, nothing left over');
+
+	// And back to trunk from a mixed tree, with the ticket's commit intact.
+	fs.writeFileSync(path.join(dir, 'doomed.php'), 'mixed again\n');
+	const back = await resumeSwitch(dir, TRUNK);
+	assert.equal(back.parked, false);
+	assert.equal(await currentBranchName(dir), TRUNK);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n');
+	assert.equal(await git.resolveRef({ fs, dir, ref }), wip);
+
+	// Already on the destination: still a repair, not a no-op.
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), 'stray\n');
+	const same = await resumeSwitch(dir, TRUNK);
+	assert.equal(same.switched, false);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n');
 });

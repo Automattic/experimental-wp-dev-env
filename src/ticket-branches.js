@@ -353,6 +353,46 @@ async function switchToBranch(dir, ref, { baseOid, author = WIP_AUTHOR, onProgre
 }
 
 /**
+ * Finishes a switch that died in its checkout (#385): the forced checkout to
+ * `ref` again, and nothing else. No park and no dirty-trunk check, because
+ * the branch being left already parked before the first attempt moved a
+ * file (a park always precedes the checkout in `switchToBranch`), and
+ * parking again would commit the half-swapped worktree over that good WIP
+ * commit, which is the one thing the caller's marker exists to prevent. The
+ * forced checkout overwrites the mixture with `ref`'s tree, HEAD included;
+ * `ref` may be the branch HEAD is already on, which is how a trunk that a
+ * failed switch left half-swapped is put back.
+ *
+ * Edits made on the mixed tree after the failure go with it: the app told
+ * the contributor to retry before making other changes.
+ *
+ * @param {string}   dir
+ * @param {string}   ref
+ * @param {Object}   [root0]
+ * @param {Function} [root0.onProgress]
+ * @param {Function} [root0.onChild]
+ */
+async function resumeSwitch(dir, ref, { onProgress = null, onChild = null } = {}) {
+	const from = await currentBranchName(dir);
+	const report = onProgress ? (p) => onProgress({ to: ref, ...p }) : null;
+	try {
+		await checkoutBranch(dir, ref, {
+			...(report ? { onProgress: (p) => report(mapCheckoutPhase(p)) } : {}),
+			...(onChild ? { onChild } : {})
+		});
+	} catch (e) {
+		if (e && typeof e === 'object') {
+			e.stage = 'checkout';
+			e.from = from;
+			e.to = ref;
+		}
+		throw e;
+	}
+	if (report) report({ stage: 'done', from });
+	return { switched: from !== ref, from, to: ref, parked: false };
+}
+
+/**
  * Deletes a ticket branch and everything committed on it — the "delete this
  * ticket's work" action, which under this model is a branch deletion and not a
  * site reset (#108).
@@ -406,5 +446,6 @@ module.exports = {
 	parkCurrentWork,
 	startTicketBranch,
 	switchToBranch,
+	resumeSwitch,
 	deleteTicketBranch
 };

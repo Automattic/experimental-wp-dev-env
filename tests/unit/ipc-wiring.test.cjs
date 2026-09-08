@@ -3018,6 +3018,82 @@ test('a checkout that died mid-switch blocks further switching (issue #108)', as
 	assert.deepEqual(switchToBranch.calls, [], 'nothing is parked until the site is reconciled');
 });
 
+// The sentence the marker shows asks for a retry, so the retry has to be
+// the one switch the marker lets through. It goes through resumeSwitch, the
+// forced checkout with no park: the branch being left parked before the
+// first attempt moved a file, and parking again would write the mixed tree
+// over that commit. Success clears the marker like any finished switch.
+test('the failed switch can be retried to its own destination, without parking (issue #385)', async () => {
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const resumeSwitch = spy(async () => ({ switched: true, from: 'trunk', to: 'ticket/61002', parked: false }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { tracTicket: 61002, baseOid: 'abc' } }, switchInProgress: { from: 'trunk', to: 'ticket/61002' } } }
+	});
+	const main = loadMain({
+		stubs: { ...silentLogging(), ...settings.stubs, './ticket-branches': { switchToBranch, resumeSwitch, currentBranchName: async () => 'trunk' } }
+	});
+
+	const result = await main.invoke('branches:switch', '/sites/wp', 'ticket/61002');
+
+	assert.equal(result.ok, true);
+	assert.deepEqual(switchToBranch.calls, [], 'nothing is parked');
+	assert.equal(resumeSwitch.calls.length, 1);
+	assert.equal(resumeSwitch.calls[0][1], 'ticket/61002');
+	assert.equal(settings.values.siteMeta['/sites/wp'].switchInProgress, null, 'the marker is cleared');
+	assert.equal(settings.values.siteMeta['/sites/wp'].currentBranch, 'ticket/61002');
+	assert.equal(settings.values.siteMeta['/sites/wp'].tracTicket, 61002);
+});
+
+test('linking the ticket the failed switch was heading for is the same retry (issue #385)', async () => {
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const startTicketBranch = spy(async () => ({ ref: 'ticket/61002', baseOid: 'abc' }));
+	const resumeSwitch = spy(async () => ({ switched: true, from: 'trunk', to: 'ticket/61002', parked: false }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { tracTicket: 61002, baseOid: 'abc' } }, switchInProgress: { from: 'trunk', to: 'ticket/61002' } } }
+	});
+	const main = loadMain({
+		stubs: { ...silentLogging(), ...settings.stubs, './ticket-branches': { switchToBranch, startTicketBranch, resumeSwitch, currentBranchName: async () => 'trunk', listTicketBranches: async () => ['ticket/61002'] } }
+	});
+
+	const other = await main.invoke('sites:set-ticket', '/sites/wp', '59234');
+	assert.equal(other.code, 'switch-incomplete', 'any other destination is still refused');
+
+	const result = await main.invoke('sites:set-ticket', '/sites/wp', '61002');
+	assert.equal(result.ok, true);
+	assert.deepEqual(switchToBranch.calls, []);
+	assert.deepEqual(startTicketBranch.calls, []);
+	assert.equal(resumeSwitch.calls.length, 1);
+	assert.equal(settings.values.siteMeta['/sites/wp'].switchInProgress, null);
+	assert.equal(settings.values.siteMeta['/sites/wp'].tracTicket, 61002);
+});
+
+// Unlink is the other exit, and under the marker it is a forced checkout of
+// trunk with no park, for the same reason. It also works when HEAD is on trunk
+// already, which is what a switch that failed leaving trunk leaves behind and
+// where the old code cleared nothing.
+test('unlinking under a mid-switch marker returns to trunk without parking, from trunk too (issue #385)', async () => {
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const resumeSwitch = spy(async () => ({ switched: false, from: 'trunk', to: 'trunk', parked: false }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: {}, currentBranch: 'trunk', switchInProgress: { from: 'trunk', to: 'ticket/61002' } } }
+	});
+	const main = loadMain({
+		stubs: { ...silentLogging(), ...settings.stubs, './ticket-branches': { switchToBranch, resumeSwitch, currentBranchName: async () => 'trunk' } }
+	});
+
+	const result = await main.invoke('sites:set-ticket', '/sites/wp', '');
+
+	assert.equal(result.ok, true);
+	assert.deepEqual(switchToBranch.calls, []);
+	assert.equal(resumeSwitch.calls.length, 1);
+	assert.equal(resumeSwitch.calls[0][1], 'trunk');
+	assert.equal(settings.values.siteMeta['/sites/wp'].switchInProgress, null);
+	assert.equal(settings.values.siteMeta['/sites/wp'].currentBranch, 'trunk');
+});
+
 test('a site that cannot be migrated is retried, not stranded on the old shape (issue #108)', async () => {
 	const startTicketBranch = spy(async () => { throw new Error('not a repository'); });
 	const listTicketBranches = spy(async () => { throw new Error('not a repository'); });
