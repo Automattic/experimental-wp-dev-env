@@ -982,10 +982,16 @@ test('git:get-patch excludes local coding-agent directories from a managed site 
 
 // A repository with a committed base, for the generation tests below. Returns
 // the directory; callers mutate the worktree and then invoke the handler.
+// Shaped like a site the app cloned (git-clone.cjs): `core.autocrlf=false`
+// keeps the tree LF on Windows too. Without it these repositories look like
+// checkouts a host Git made, and on Windows the reads and `git apply` carry
+// the CRLF view for those (crlfArgs), so a byte-for-byte assertion on what a
+// generated patch wrote would see CRLF where the patch said LF.
 async function patchRepo(t, files) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-patch-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	for (const [name, content] of Object.entries(files)) {
 		fs.writeFileSync(path.join(dir, name), content);
 	}

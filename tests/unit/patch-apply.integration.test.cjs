@@ -10,12 +10,17 @@ const JsDiff = require('diff');
 const { applyPatchToDir, rollback, snapshotFiles, diagnoseHunks } = require('../../src/patch-apply');
 const { parsePatchFiles } = require('../../src/patch-plan.cjs');
 
-// A real on-disk repo: the applier hands the patch to the bundled Git, which
-// wants a repository to apply into (and refuses paths outside it).
-async function makeRepo(t, files) {
+// A real on-disk repo, shaped like a site the app cloned (`core.autocrlf`
+// pinned, so the tree stays LF on Windows and the byte-for-byte assertions
+// mean the same on every platform): the applier hands the patch to the
+// bundled Git, which wants a repository to apply into (and refuses paths
+// outside it). `adopted: true` leaves the config unwritten instead, the shape
+// a host Git left behind, which is the one case the CRLF view is about.
+async function makeRepo(t, files, { adopted = false } = {}) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-test-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	if (!adopted) await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	for (const [relPath, content] of Object.entries(files)) {
 		const abs = path.join(dir, relPath);
 		fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -465,7 +470,7 @@ deleted file mode 100644
 // same file is refused, which is the documented limit of the move to
 // `git apply` (a site the app cloned is LF, so it never meets it).
 test('applyPatchToDir: an LF patch fits a CRLF file under the Windows view, and is refused without it (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY.replace(/\n/g, '\r\n') });
+	const dir = await makeRepo(t, { [FOO]: FOO_BODY.replace(/\n/g, '\r\n') }, { adopted: true });
 	const refused = await applyPatchToDir({ dir, patchText: FOO_PATCH, platform: 'darwin' });
 	assert.strictEqual(refused.ok, false);
 	assert.strictEqual(fs.readFileSync(path.join(dir, FOO), 'utf8'), 'one\r\ntwo\r\nthree\r\n', 'nothing written');
