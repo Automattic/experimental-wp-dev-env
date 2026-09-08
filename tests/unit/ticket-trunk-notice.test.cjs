@@ -33,7 +33,9 @@ test('ticketTrunkNotice stays silent without a ticket or a known move (#305)', (
 });
 
 test('the ticket card renders the stale-ticket notice returned by status (#305)', () => {
-	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx'), 'utf8');
+	// LF whatever the checkout's line endings: a Windows runner reads the
+	// source as CRLF and the position check below compares bytes.
+	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx'), 'utf8').replace(/\r\n/g, '\n');
 	assert.match(source, /setTicketBehindTrunk\(Boolean\(s\?\.ticketBehindTrunk\)\)/);
 	assert.match(source, /ticketTrunkNotice\(\{ ticketId: tracTicket, behind: ticketBehindTrunk \}\)/);
 	assert.match(source, /staleTicketNotice\.title/);
