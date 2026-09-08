@@ -158,6 +158,15 @@ test('isLegacySite reads no config when the repository is not shallow (#385)', a
 	assert.deepEqual(seen, []);
 });
 
+test('remoteUrl is one config read, null when the remote is not there (#385)', async () => {
+	const run = async (args, options) => {
+		assert.deepEqual(options, { cwd: '/sites/wp', okCodes: [0, 1] });
+		return args[3] === 'remote.origin.url' ? { status: 0, stdout: Buffer.from('https://example.test/wp.git\n'), stderr: '' } : { status: 1, stdout: Buffer.alloc(0), stderr: '' };
+	};
+	assert.equal(await read.remoteUrl('/sites/wp', 'origin', { run }), 'https://example.test/wp.git');
+	assert.equal(await read.remoteUrl('/sites/wp', 'upstream', { run }), null);
+});
+
 test('isAncestor is one merge-base question, answered by the exit code (#385)', async () => {
 	const calls = [];
 	const run = async (args, options) => { calls.push({ args, options }); return { status: args.includes('yes') ? 0 : 1, stdout: Buffer.alloc(0), stderr: '' }; };

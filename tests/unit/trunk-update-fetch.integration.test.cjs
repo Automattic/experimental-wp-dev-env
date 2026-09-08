@@ -94,6 +94,11 @@ test('updateToLatestTrunk: a site with full history is not made shallow by the u
 	assert.strictEqual(fs.existsSync(path.join(dir, '.git', 'shallow')), false, 'no shallow boundary is written');
 	assert.strictEqual(git(['rev-parse', '--is-shallow-repository'], dir).stdout, 'false');
 	assert.strictEqual(git(['config', '--local', '--get', 'remote.origin.promisor'], dir).stdout, 'true');
+	// And it stayed partial: the fetch passed no `--filter` because the
+	// promisor config makes it partial by itself, so the blob of the middle
+	// commit, never checked out, is still on the server.
+	const missing = git(['rev-list', '--objects', '--missing=print', 'HEAD'], dir).stdout.split('\n').filter((l) => l.startsWith('?'));
+	assert.strictEqual(missing.length, 1, 'exactly the blob nothing checked out was left behind');
 	assert.strictEqual(result.newOid, thirdOid);
 	assert.strictEqual(fs.readFileSync(path.join(dir, 'wp-config.php'), 'utf8'), 'third\n');
 	assert.deepStrictEqual(git(['rev-list', 'HEAD'], dir).stdout.split('\n'), [thirdOid, secondOid, firstOid, baseOid]);
@@ -193,6 +198,9 @@ test("updateToLatestTrunk: a failure after HEAD moves is tagged stage 'checkout'
 	// (A directory in the way of a new file, the old fixture, is something
 	// the real Git's forced checkout simply removes.)
 	const newOid = commitInOrigin(origin, { 'wp-config.php': 'second\n' }, 'second');
+	// Nothing is staged in this fixture, so the pathspec reset runs no Git
+	// and the lock is first met by the checkout; stage something here and
+	// the failure moves before the ref write.
 	fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
 
 	await assert.rejects(
@@ -216,6 +224,21 @@ test("updateToLatestTrunk: a ref that cannot be written is tagged stage 'checkou
 		(e) => e.stage === 'checkout' && e.worktreeReset === false
 	);
 	assert.strictEqual(fs.readFileSync(path.join(dir, 'wp-config.php'), 'utf8'), 'first\n');
+});
+
+// The ref write is guarded with trunk's own value, not with HEAD's: this
+// module does not assume the checkout is on trunk, only that trunk is
+// where the update lands.
+test('updateToLatestTrunk: from a detached HEAD the update still moves trunk and checks it out (issue #385)', async (t) => {
+	const { origin, dir } = await makeSiteAndOrigin(t);
+	const newOid = commitInOrigin(origin, { 'wp-config.php': 'second\n' }, 'second');
+	assert.strictEqual(git(['checkout', '-q', '--detach', 'HEAD'], dir).status, 0);
+
+	const result = await updateToLatestTrunk({ dir });
+
+	assert.strictEqual(result.newOid, newOid);
+	assert.strictEqual(git(['symbolic-ref', '--short', 'HEAD'], dir).stdout, 'trunk');
+	assert.strictEqual(git(['rev-parse', 'refs/heads/trunk'], dir).stdout, newOid);
 });
 
 // A fetch failure is the other end of the same contract: nothing moved, so

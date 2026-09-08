@@ -211,6 +211,10 @@ test('fetchBranch asks for one branch of one remote with progress, no depth and 
 	assert.deepEqual(result, { oid: 'new1' });
 	const { args, options } = calls[0];
 	assert.deepEqual(args.slice(-6), ['fetch', '--progress', '--no-tags', '--', 'origin', 'trunk']);
+	// The URL is the site's own config, so `ext::` and friends are closed
+	// before it is read; what the app fetches over stays open.
+	const protocols = args.filter((a, i) => args[i - 1] === '-c' && a.startsWith('protocol.'));
+	assert.deepEqual(protocols, ['protocol.allow=never', 'protocol.https.allow=always', 'protocol.http.allow=always', 'protocol.file.allow=always']);
 	assert.ok(!args.some((a) => /^--depth|^--filter|^--unshallow/.test(a)), 'the site config decides how much comes down');
 	assert.ok(!args.includes('core.autocrlf=true') && !args.includes('core.longpaths=true'), 'a fetch touches no worktree');
 	assert.equal(options.cwd, '/sites/wp');

@@ -15,9 +15,11 @@
  * before this module is called (`legacySiteBlock` in main.js), so there is
  * no site left whose history a depth-less fetch would pull in.
  *
- * `ensureAutocrlf` / `createCrlfCompatibleFs` are still exported for
- * patch-apply.js and `sites:add`, the last callers on isomorphic-git; they
- * leave with the patch flow. Nothing in this file uses them any more.
+ * `ensureAutocrlf` / `createCrlfCompatibleFs` are still exported for their
+ * three callers (`collectChangedFiles` in patch-apply.js, the patch export
+ * and `sites:add` in main.js), none of which uses the view they return now
+ * that no read or write runs on isomorphic-git; they leave with the patch
+ * flow. Nothing in this file uses them any more.
  *
  * main.js owns the IPC plumbing and electron-store writes; the pure
  * status-row/oid decision rules live in git-update.cjs.
@@ -306,7 +308,10 @@ async function updateToLatestTrunk({ dir, onLog = () => {}, onChild = null }) {
 		onLog(`\nResetting to latest trunk (${newOid.slice(0, 7)})…\n`);
 		// `expected` makes a trunk that moved under this update (a second
 		// writer) a loud failure with the tree untouched, not an overwrite.
-		await updateBranch(dir, 'trunk', newOid, { expected: oldOid });
+		// Guarded with the ref's own value, not `oldOid`: the caller parks to
+		// trunk first, but this module does not assume HEAD is on it.
+		const trunkOid = await resolveRef(dir, 'refs/heads/trunk');
+		await updateBranch(dir, 'trunk', newOid, trunkOid ? { expected: trunkOid } : {});
 		// Everything above this line can fail with the working tree untouched —
 		// the status walks a 5k-file checkout and update-ref only moves a ref.
 		// From here on, files are being overwritten, so anything the tree used to

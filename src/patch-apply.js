@@ -3,10 +3,10 @@
 /**
  * Applying someone else's patch to a checkout (issue #11).
  *
- * There is no `git apply` available: the app never shells out to a git binary,
- * and isomorphic-git has no apply primitive. So hunks are matched and written
- * here, using the `diff` package the app already bundles for the generating
- * side.
+ * Hunks are matched and written here by hand, with the `diff` package the app
+ * already bundles for the generating side. This predates the bundled Git
+ * (#364): whether `git apply` replaces it is the patch flow's decision (#385),
+ * with tests/e2e/journeys/patch-apply.spec.js as the judge.
  *
  * The rule that shapes everything below is **all or nothing**. A patch that
  * half-applies is worse than one that does not apply at all: the contributor

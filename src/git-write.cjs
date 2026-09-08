@@ -26,6 +26,22 @@ const { windowsArgs, resolveRef } = require('./git-read.cjs');
 const oidOf = ({ stdout }) => stdout.toString('utf8').trim();
 
 /**
+ * The transports a fetch may use. The URL comes from the site's own config
+ * (a site adopted from disk brought its `.git/config` with it), and Git's
+ * `ext::` transport runs a command named in that URL; `protocol.allow=never`
+ * closes that and everything else, then `https` and `http` are what
+ * wordpress-develop and any fork are reached over, and `file` is what the
+ * tests use. `ssh` stays off: it would spawn a host `ssh`, which the app
+ * has no business depending on.
+ */
+const FETCH_PROTOCOLS = [
+	'-c', 'protocol.allow=never',
+	'-c', 'protocol.https.allow=always',
+	'-c', 'protocol.http.allow=always',
+	'-c', 'protocol.file.allow=always'
+];
+
+/**
  * Stages exactly `paths`: modifications and additions are added, deletions
  * are removed from the index (`-A` scoped to a pathspec does all three).
  * The paths are the ones a status scan returned, byte for byte, so they are
@@ -171,7 +187,8 @@ async function checkoutBranch(dir, ref, { onProgress = null, onChild = null, pla
  * site the app made carries `remote.origin.promisor` in its own config, so
  * the fetch is partial by itself, and a full clone adopted from disk fetches
  * the way its owner's Git would. `--no-tags` keeps wordpress-develop's tags
- * (one per release) off a site that never needs them.
+ * (one per release) off a site that never needs them. Only `https`, `http`
+ * and `file` are allowed as transports (`FETCH_PROTOCOLS`).
  *
  * Git's progress goes to `onStderr` as it is printed, `remote: Counting
  * objects` and `Receiving objects` included, because those lines are already
@@ -190,7 +207,7 @@ async function checkoutBranch(dir, ref, { onProgress = null, onChild = null, pla
  * @return {Promise<{oid: string}>}
  */
 async function fetchBranch(dir, remote, branch, { onStderr = null, onProgress = null, onChild = null, spawn, resolve = resolveRef } = {}) {
-	await streamGit(['fetch', '--progress', '--no-tags', '--', remote, branch], { cwd: dir, onStderr, onProgress, onChild, spawn });
+	await streamGit([...FETCH_PROTOCOLS, 'fetch', '--progress', '--no-tags', '--', remote, branch], { cwd: dir, onStderr, onProgress, onChild, spawn });
 	const oid = await resolve(dir, 'FETCH_HEAD');
 	if (!oid) throw new GitError(`git fetch left no FETCH_HEAD for ${remote} ${branch}`, { code: 'no-fetch-head', signal: null, stderr: '', args: ['fetch', remote, branch], cwd: dir });
 	return { oid };

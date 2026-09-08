@@ -279,8 +279,9 @@ async function windowsArgs(dir, { platform = process.platform, run = runGit } = 
  * Two shapes, told apart by what each clone wrote into the repository. The
  * bundled Git clones partial (`--filter=blob:none`, git-clone.cjs): the
  * remote carries `remote.origin.promisor` and the repository is never
- * shallow, because the trunk update only keeps `--depth` when `.git/shallow`
- * already exists. isomorphic-git cloned shallow: `.git/shallow` is there and
+ * shallow, because nothing the app runs afterwards passes `--depth` (the
+ * trunk update fetches with no depth and no filter, trunk-update.js).
+ * isomorphic-git cloned shallow: `.git/shallow` is there and
  * no promisor was ever written. The app stopped writing to those sites when
  * its writes moved to the binary, since the two engines disagree on what a
  * shallow checkout may do; the site card says so and offers a new site.
@@ -310,6 +311,23 @@ async function isLegacySite(dir, { run = runGit } = {}) {
  */
 async function resolveRef(dir, ref) {
 	const { status, stdout } = await runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: dir, okCodes: [0, 1] });
+	return status === 0 ? stdout.toString('utf8').trim() : null;
+}
+
+/**
+ * The URL a remote points at, or null when the repository has no such
+ * remote. What the trunk update fetches from is the checkout's own
+ * `origin`, so a site adopted from disk without one is told before the
+ * fetch runs rather than by Git's stderr.
+ *
+ * @param {string}   dir
+ * @param {string}   remote
+ * @param {Object}   [options]
+ * @param {Function} [options.run]
+ * @return {Promise<?string>}
+ */
+async function remoteUrl(dir, remote, { run = runGit } = {}) {
+	const { status, stdout } = await run(['config', '--local', '--get', `remote.${remote}.url`], { cwd: dir, okCodes: [0, 1] });
 	return status === 0 ? stdout.toString('utf8').trim() : null;
 }
 
@@ -484,6 +502,7 @@ module.exports = {
 	isLegacySite,
 	resolveRef,
 	isAncestor,
+	remoteUrl,
 	readCommitInfo,
 	currentBranch,
 	listBranches,

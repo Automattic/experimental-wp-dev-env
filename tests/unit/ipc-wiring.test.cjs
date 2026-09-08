@@ -3166,6 +3166,31 @@ test('discarding refuses a legacy site before touching trunk-update (#385)', asy
 	assert.equal(settings.values.siteMeta['/sites/wp'].branches['ticket/61002'].appliedPatch.text, 'X');
 });
 
+test('the trunk update refuses a site with no origin before parking anything (#359)', async () => {
+	const updateToLatestTrunk = spy(async () => ({}));
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': { tracTicket: 59234, currentBranch: 'ticket/59234', branches: { 'ticket/59234': { tracTicket: 59234, baseOid: 'abc' } } } } });
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./git-read.cjs': { isLegacySite: async () => false, remoteUrl: async () => null },
+			'./trunk-update': { updateToLatestTrunk },
+			'./ticket-branches': { switchToBranch, currentBranchName: async () => 'ticket/59234' }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	const done = await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	assert.equal(done.ok, false);
+	assert.equal(done.code, 'no-origin');
+	assert.deepEqual(updateToLatestTrunk.calls, []);
+	assert.deepEqual(switchToBranch.calls, [], 'the ticket was not parked for an update that cannot run');
+	assert.ok(event.sent.some((m) => m.channel === 'git:update-trunk:log' && /no origin remote/.test(m.payload.data)));
+});
+
 test('the trunk update refuses a legacy site on its done channel (#385)', async () => {
 	const updateToLatestTrunk = spy(async () => ({}));
 	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': { branches: {} } } });

@@ -33,7 +33,7 @@ const { fetchLinkedPrs, fetchPrDiff } = require('./github-prs');
 const { getClientId: getGithubClientId, requestDeviceCode, pollForToken, fetchViewer } = require('./github-auth.cjs');
 const { openPullRequest, buildPullRequestBody, testMode: githubTestMode } = require('./github-pr.cjs');
 const { buildPullRequestEntries } = require('./pr-files.cjs');
-const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite } = require('./git-read.cjs');
+const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite, remoteUrl } = require('./git-read.cjs');
 const { cloneSite } = require('./git-clone.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
 const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
@@ -1106,6 +1106,25 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
  *
  * @param {string} sitePath
  */
+const NO_ORIGIN_ERROR = 'This site has no origin remote to fetch from, so it cannot be updated. Add one from a terminal (git remote add origin <url>) or create a new site.';
+
+/**
+ * The update fetches from the checkout's own `origin` (#359), which every
+ * site the app clones has and a site added from disk may not. Told before
+ * the fetch, with the app's sentence, rather than by Git's stderr after the
+ * ticket was parked. Same shape as the other two blocks.
+ *
+ * @param {string} sitePath
+ */
+async function noOriginBlock(sitePath) {
+    let url = null;
+    // A read that fails is not an answer: the fetch that follows reports its
+    // own reason, the way a status read that fails reports `legacy: false`.
+    try { url = await remoteUrl(sitePath, 'origin'); } catch { return null; }
+    if (url) return null;
+    return { ok: false, code: 'no-origin', error: NO_ORIGIN_ERROR };
+}
+
 async function legacySiteBlock(sitePath) {
     if (!await isLegacySite(sitePath)) return null;
     return { ok: false, code: 'legacy-site', error: LEGACY_SITE_ERROR };
@@ -1433,7 +1452,7 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
         try {
             // The update rewrites `trunk` and checks it out, so it has to run
             // from trunk (#108). Park the ticket first, and return to it after.
-            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath);
+            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath) || await noOriginBlock(sitePath);
             if (blocked) { sendLog(`\n${blocked.error}\n`); sendDone(blocked); return; }
 
             const active = await activeBranch(sitePath, { migrate: true });

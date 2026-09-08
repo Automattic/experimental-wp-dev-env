@@ -23,10 +23,15 @@ const {
 
 const AUTHOR = { name: 'test', email: 'test@example.com' };
 
-async function makeRepo(t) {
+// The shape the clone writes (git-clone.cjs): with core.autocrlf pinned the
+// binary's checkout writes LF on Windows too, so the byte-for-byte assertions
+// on the discards mean the same on every platform. The CRLF-view tests below
+// are about a repository that has no such value, and ask for one.
+async function makeRepo(t, { autocrlfUnset = false } = {}) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trunk-update-test-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	if (!autocrlfUnset) await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\nline2\n');
 	// Big5-style bytes: not valid UTF-8, the encoding-fixture case.
 	fs.writeFileSync(path.join(dir, 'big5.txt'), Buffer.from([0xa4, 0xa4, 0x0a, 0xa4, 0xe5, 0x0a]));
@@ -50,7 +55,7 @@ test('collectDirtyFiles: CRLF-smudged files, UTF-8 or not, are not dirty (issue 
 
 for (const platform of ['darwin', 'linux']) {
 	test(`CRLF compatibility: ${platform} leaves an unset local core.autocrlf untouched (issue #341)`, async (t) => {
-		const dir = await makeRepo(t);
+		const dir = await makeRepo(t, { autocrlfUnset: true });
 		const compatibleFs = createCrlfCompatibleFs(dir, { platform });
 
 		assert.strictEqual(await git.getConfig({ fs: compatibleFs, dir, path: 'core.autocrlf' }), undefined);
@@ -60,7 +65,7 @@ for (const platform of ['darwin', 'linux']) {
 
 for (const value of [undefined, 'true', 'false', 'input']) {
 	test(`CRLF compatibility: Windows preserves local core.autocrlf=${value ?? 'unset'} (issue #341)`, async (t) => {
-		const dir = await makeRepo(t);
+		const dir = await makeRepo(t, { autocrlfUnset: true });
 		if (value !== undefined) {
 			await git.setConfig({ fs, dir, path: 'core.autocrlf', value });
 		}
@@ -74,7 +79,7 @@ for (const value of [undefined, 'true', 'false', 'input']) {
 }
 
 test('CRLF compatibility: Windows normalizes a CRLF checkout without persisting config (issue #341)', async (t) => {
-	const dir = await makeRepo(t);
+	const dir = await makeRepo(t, { autocrlfUnset: true });
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\r\nline2\r\n');
 	const compatibleFs = createCrlfCompatibleFs(dir, { platform: 'win32' });
 
@@ -85,7 +90,7 @@ test('CRLF compatibility: Windows normalizes a CRLF checkout without persisting 
 });
 
 test('CRLF compatibility: a worktree file named config is not altered in memory (issue #341)', async (t) => {
-	const dir = await makeRepo(t);
+	const dir = await makeRepo(t, { autocrlfUnset: true });
 	fs.writeFileSync(path.join(dir, 'config'), 'ordinary worktree content\n');
 	const compatibleFs = createCrlfCompatibleFs(dir, { platform: 'win32' });
 
@@ -114,7 +119,7 @@ test('CRLF compatibility: a gitdir file receives the same non-persistent view (i
 });
 
 test('CRLF compatibility: config read failures are logged and remain failures (issue #341)', async (t) => {
-	const dir = await makeRepo(t);
+	const dir = await makeRepo(t, { autocrlfUnset: true });
 	const errors = [];
 	const failingFs = Object.create(fs);
 	const promises = Object.create(fs.promises);
