@@ -71,11 +71,11 @@ function normalizeEol(text) {
 }
 
 /**
- * Byte-level CRLF→LF normalization for Buffers. isomorphic-git's autocrlf
- * handling only normalizes files that decode as valid UTF-8, so non-UTF8
- * text fixtures (e.g. wordpress-develop's Big5/Latin-1 encoding tests)
- * smudged to CRLF by a native-git checkout still hash as modified. This
- * works on raw bytes, so encoding doesn't matter.
+ * Byte-level CRLF→LF normalization for Buffers. Comparing decoded text would
+ * leave out exactly the files this is for: wordpress-develop's Big5 and
+ * Latin-1 encoding fixtures are not valid UTF-8, and once a host Git's
+ * autocrlf checkout has smudged them to CRLF they would read as modified
+ * forever. Raw bytes make the encoding irrelevant.
  *
  * @param {Buffer|Uint8Array} buf
  */

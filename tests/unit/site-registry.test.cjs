@@ -172,7 +172,7 @@ test('a reveal the OS declines is reported rather than swallowed', async () => {
 // `pending` is the other half of the boundary: paths the main process is
 // setting up right now, computed by main itself and never sent by the renderer.
 // It widens what may be *opened*, and it narrows what may be *deleted* — a
-// recursive remove of a tree isomorphic-git is writing into is the one thing
+// recursive remove of a tree the clone is still writing into is the one thing
 // worse than the bug.
 
 const PENDING = '/Users/dev/sites/being-cloned';

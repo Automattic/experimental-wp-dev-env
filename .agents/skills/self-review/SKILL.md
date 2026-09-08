@@ -24,5 +24,5 @@ Two things this skill adds on top, both agent-neutral — apply whichever your a
 ## Notes
 
 - This is the same skill as [`.claude/skills/self-review/`](../../../.claude/skills/self-review/), placed here because agents built on the Agent Skills open standard (Command Code and others) discover skills under `.agents/skills/` rather than `.claude/skills/`. Both are thin wrappers over the one instructions file — neither is a second copy of the standard.
-- The repo-specific knowledge this adds over a generic review: Electron's bundled Node, `isomorphic-git`, `electron-store`, loopback binding, the Windows spawn shims.
+- The repo-specific knowledge this adds over a generic review: Electron's bundled Node, the bundled Git binary, `electron-store`, loopback binding, the Windows spawn shims.
 - If a finding reveals a rule the instructions file does not yet cover, say so. It is meant to accumulate what the project learns.

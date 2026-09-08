@@ -7,15 +7,14 @@
  * Every command here asks for porcelain-stable output with the flag that pins
  * it (`--porcelain=v2`, `-z`, an explicit `--format`), and every parser is a
  * pure function over the bytes so it can be tested on fixture strings without
- * a repository. The read functions return the same shapes the isomorphic-git
- * calls they replace returned, so the facades that call them
+ * a repository. The shapes the read functions return are the ones the engine
+ * before the binary returned, kept on purpose so the facades that call them
  * (trunk-update.js, ticket-branches.js, pr-files.cjs, main.js) keep their
- * signatures and the renderer does not know the engine changed.
+ * signatures and the renderer never learned the engine changed.
  *
  * Status rows keep the `[path, head, workdir, stage]` shape documented in
  * git-update.cjs. The mapping from `status --porcelain=v2` is at
- * `rowFromStatusEntry`; the one known divergence from isomorphic-git is
- * described there.
+ * `rowFromStatusEntry`, with the two rows it cannot express exactly.
  */
 
 const fs = require('node:fs');
@@ -53,13 +52,14 @@ function splitNul(buf) {
  *   stage   0 absent from index, 1 identical to HEAD, 2 staged change,
  *           3 staged change with further unstaged edits
  *
- * Known divergences, both only reachable through a user's own client: a file
- * staged and then edited back to its HEAD content is `workdir = 2` here (Y
- * reports it as modified against the index) where isomorphic-git, which
- * hashes, said 1; and a path removed from the index but kept on disk is one
- * "different" row here where isomorphic-git said identical. Every consumer
- * that acts on the file byte-compares afterwards (isCrlfOnlyChange,
- * classifyChangedFile), so only a count can differ.
+ * Two rows are coarser than the vocabulary allows, both only reachable
+ * through a user's own client: a file staged and then edited back to its HEAD
+ * content is `workdir = 2` here, because Y reports it as modified against the
+ * index and this parser does not hash to find out otherwise; and a path
+ * removed from the index but kept on disk is one "different" row rather than
+ * an identical one. Every consumer that acts on the file byte-compares
+ * afterwards (isCrlfOnlyChange, classifyChangedFile), so only a count can
+ * differ.
  *
  * @param {string} xy
  * @param {string} filepath

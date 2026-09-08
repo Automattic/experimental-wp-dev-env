@@ -5,7 +5,7 @@ Everything about tests in this repository: what to run, what the suite is made o
 ## What to run
 
 ```
-npm test                    # the fast suite — layers 1–3, under three seconds
+npm test                    # the fast suite — layers 1–3, a few seconds
 npm run test:e2e            # the app, driven — layer 4, seconds
 npm run lint                # ESLint over the whole repo
 ```
@@ -27,9 +27,9 @@ To run one file: `node --test tests/unit/azure-sign.test.cjs`. To run one journe
 
 ```
 tests/
-  unit/            layers 1-3 — npm test — under three seconds
+  unit/            layers 1-3 — npm test — a few seconds
     fixtures/      package.json trees the integration tests copy; not tests themselves
-    helpers/       the bundled-Git driver the Git suites share; not a test either
+    helpers/       the bundled-Git driver and fixture builder the Git suites share; not a test either
   e2e/
     journeys/      layer 4 — npm run test:e2e
     packaged/      layer 5 — npm run test:e2e:packaged, and it needs a build first

@@ -103,8 +103,8 @@ test( 'linking a ticket creates its branch and leaves trunk alone', async ( { se
 
 	// INVARIANT — the ticket is a branch in the repository, and it is the one
 	// checked out. Whatever the app records about it is secondary to this.
-	expect( await branches( site.dir ) ).toContain( 'ticket/60001' );
-	expect( await currentBranch( site.dir ) ).toBe( 'ticket/60001' );
+	expect( branches( site.dir ) ).toContain( 'ticket/60001' );
+	expect( currentBranch( site.dir ) ).toBe( 'ticket/60001' );
 
 	// INVARIANT — the substrate survives. Reinstalling it costs a contributor
 	// minutes, and nothing in the app would report that it had gone.
@@ -130,8 +130,8 @@ test( 'unlinking parks a ticket, and the next one starts from trunk', async ( { 
 	// edit here would mean two tickets' work ending up in one patch, which is
 	// the failure a contributor discovers only when a reviewer asks about it.
 	expect( read( site.dir, LOGIN ) ).toBe( '<?php // trunk\n' );
-	expect( await currentBranch( site.dir ) ).toBe( 'ticket/60002' );
-	expect( await branches( site.dir ) ).toEqual(
+	expect( currentBranch( site.dir ) ).toBe( 'ticket/60002' );
+	expect( branches( site.dir ) ).toEqual(
 		expect.arrayContaining( [ TRUNK, 'ticket/60001', 'ticket/60002' ] )
 	);
 
@@ -193,8 +193,8 @@ test( "deleting a ticket's work removes only that ticket", async ( { session } )
 
 	// INVARIANT — it deletes only what was asked for. The other ticket's work is
 	// untouched, the checkout is on trunk, and the substrate is still there.
-	expect( await branches( site.dir ) ).toContain( 'ticket/60001' );
-	expect( await currentBranch( site.dir ) ).toBe( TRUNK );
+	expect( branches( site.dir ) ).toContain( 'ticket/60001' );
+	expect( currentBranch( site.dir ) ).toBe( TRUNK );
 	expect( read( site.dir, SUBSTRATE ) ).toBe( SUBSTRATE_CONTENT );
 
 	// INVARIANT — and the deleted ticket is gone from the panel, not merely from
