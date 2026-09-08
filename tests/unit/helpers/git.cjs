@@ -8,11 +8,17 @@
 //
 // `git` runs one command and hands back its exit status; `gitOk` throws
 // instead, and the fixture layer on top of it (`initRepo`, `commitFiles`,
-// `resolveRef`, `currentBranch`, `listBranches`, `commitMeta`) is what every
-// suite builds its repositories with since #386 retired the second engine.
-// One place decides the two things a fixture has to match the app on: the
-// identity a commit carries, and the `core.autocrlf=false` the app's clone
-// writes.
+// `resolveRef`, `currentBranch`, `listBranches`, `commitMeta`) is what the
+// suites that used to build their repositories with a second engine build
+// them with since #386. For those, one place decides the two things a fixture
+// has to match the app on: the identity a commit carries, and the
+// `core.autocrlf=false` the app's clone writes.
+//
+// The suites written against the binary from the start (git-read, git-write,
+// git-clone, git-run and the fetch suite) still call `git` directly with
+// their own `init`: each is about one primitive, and a repository built by
+// the layer above the primitive under test would beg the question. New
+// fixtures that only need a repository should use the layer.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -133,21 +139,23 @@ const listBranches = (dir) =>
 
 /**
  * What a commit says about itself, for the assertions that used to read it
- * through a second engine's object parser.
+ * through a second engine's object parser. `%B` rather than `%s`: an assertion
+ * about a message has to see the whole message, or a body added later would
+ * slip past it.
  *
  * @param {string} dir
  * @param {string} ref
  * @return {{oid: string, parents: string[], author: Object, committer: Object, message: string, committerTimestamp: number}}
  */
 function commitMeta(dir, ref) {
-	const format = ['%H', '%P', '%an', '%ae', '%cn', '%ce', '%s', '%ct'].join('%x00');
-	const [oid, parents, an, ae, cn, ce, message, ct] = gitOk(['log', '-1', `--format=${format}`, ref], dir).split('\0');
+	const format = ['%H', '%P', '%an', '%ae', '%cn', '%ce', '%ct', '%B'].join('%x00');
+	const [oid, parents, an, ae, cn, ce, ct, message] = gitOk(['log', '-1', `--format=${format}`, ref, '--'], dir).split('\0');
 	return {
 		oid,
 		parents: parents ? parents.split(' ') : [],
 		author: { name: an, email: ae },
 		committer: { name: cn, email: ce },
-		message,
+		message: message.trim(),
 		committerTimestamp: Number(ct)
 	};
 }

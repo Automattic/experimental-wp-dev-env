@@ -47,7 +47,7 @@ const {
 
 // How many commits a ref has behind it, the question `git.log(...).length`
 // used to answer.
-const countCommits = (dir, ref) => Number(gitOk(['rev-list', '--count', ref], dir));
+const countCommits = (dir, ref) => Number(gitOk(['rev-list', '--count', ref, '--'], dir));
 
 async function makeSite(t) {
 	// tempDir rather than a bare rmSync: the binary writes its objects
@@ -137,7 +137,7 @@ test('the gitignored substrate survives every switch (issue #108)', async (t) =>
 
 	assert.equal(read(dir, dep), 'expensive\n', 'node_modules must never be rewritten by a switch');
 	// It must also stay out of the branch itself, or every switch would carry it.
-	const tracked = gitOk(['ls-tree', '-r', '--name-only', first.ref], dir).split('\n');
+	const tracked = gitOk(['ls-tree', '-r', '--name-only', first.ref, '--'], dir).split('\n');
 	assert.equal(tracked.some((f) => f.startsWith('node_modules/')), false);
 });
 
@@ -202,7 +202,7 @@ test('a patch diffed against baseOid contains the ticket\'s work, WIP commit and
 	// Uncommitted edits on top must show up in the same diff as the parked ones.
 	fs.writeFileSync(path.join(dir, 'later.php'), '<?php // not parked yet\n');
 	const changed = [
-		...gitOk(['diff', '--name-only', baseOid], dir).split('\n'),
+		...gitOk(['diff', '--name-only', baseOid, '--'], dir).split('\n'),
 		...gitOk(['ls-files', '--others', '--exclude-standard'], dir).split('\n')
 	].filter(Boolean);
 	assert.deepEqual(changed.sort(), ['later.php', 'wp-login.php']);
