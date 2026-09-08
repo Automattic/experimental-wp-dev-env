@@ -310,6 +310,61 @@ test('applyPatchToDir: a binary file whose section carries its data is applied (
 	assert.deepStrictEqual(res.applied, ['src/images/dot.png']);
 	assert.deepStrictEqual(res.skipped, []);
 	assert.deepStrictEqual([...fs.readFileSync(path.join(dir, 'src', 'images', 'dot.png'))], [...bytes]);
+
+	// And back out: the reverse `literal` block is in the same section.
+	const reverted = await applyPatchToDir({ dir, patchText, reverse: true });
+	assert.strictEqual(reverted.ok, true, reverted.error);
+	assert.strictEqual(fs.existsSync(path.join(dir, 'src', 'images', 'dot.png')), false);
+});
+
+// A patch whose every section is a data-less binary has nothing for Git to
+// do and nothing wrong with it: it succeeds with its skips named, as it did
+// before the move to `git apply`, and the record main.js writes is honest.
+test('applyPatchToDir: a patch that is only data-less binaries succeeds with them named, not refused (#385)', async (t) => {
+	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const before = snapshot(dir);
+	const binaryOnly = `diff --git a/src/x.png b/src/x.png
+index 111..222 100644
+Binary files a/src/x.png and b/src/x.png differ
+`;
+	const log = [];
+	const res = await applyPatchToDir({ dir, patchText: binaryOnly, onLog: (l) => log.push(l) });
+	assert.deepStrictEqual(res, { ok: true, applied: [], skipped: ['src/x.png'] });
+	assert.match(log.join(''), /Skipped 1 binary file.*src\/x\.png/);
+	assert.deepStrictEqual(snapshot(dir), before);
+});
+
+// Two sections on one file pass their own check and fail together: the one
+// place Git's own last line is what the contributor reads.
+test('applyPatchToDir: a patch Git refuses only as a whole names Git\'s reason (#385)', async (t) => {
+	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const deleteThenEdit = `diff --git a/${FOO} b/${FOO}
+deleted file mode 100644
+--- a/${FOO}
++++ /dev/null
+@@ -1,3 +0,0 @@
+-one
+-two
+-three
+${FOO_PATCH}`;
+	const res = await applyPatchToDir({ dir, patchText: deleteThenEdit });
+	assert.strictEqual(res.ok, false);
+	assert.strictEqual(res.failures.length, 1);
+	assert.match(res.failures[0], /error: .*foo\.php/);
+	assert.strictEqual(fs.readFileSync(path.join(dir, FOO), 'utf8'), FOO_BODY, 'nothing written');
+});
+
+test('applyPatchToDir: a rename whose destination already exists is refused by name (#385)', async (t) => {
+	const dir = await makeRepo(t, { 'src/old.php': 'one\n', 'src/new.php': 'taken\n' });
+	const rename = `diff --git a/src/old.php b/src/new.php
+similarity index 100%
+rename from src/old.php
+rename to src/new.php
+`;
+	const res = await applyPatchToDir({ dir, patchText: rename });
+	assert.strictEqual(res.ok, false);
+	assert.match(res.error, /src\/new\.php already exists, so the patch cannot move src\/old\.php onto it/);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'src', 'new.php'), 'utf8'), 'taken\n');
 });
 
 test('applyPatchToDir: an unreadable patch reports why and changes nothing (issue #11)', async (t) => {
@@ -651,6 +706,14 @@ test('rollback: returns an empty list when it restores everything (issue #11)', 
 	assert.deepStrictEqual(recovery, []);
 	assert.strictEqual(fs.readFileSync(path.join(dir, 'kept'), 'utf8'), 'before\n');
 	assert.strictEqual(fs.existsSync(path.join(dir, 'added')), false, 'an added file is removed on rollback');
+
+	// A file Git never reached keeps its bytes and its mtime: the snapshot is
+	// not written over what is already there.
+	fs.writeFileSync(path.join(dir, 'kept'), 'before\n');
+	const mtime = new Date(Date.now() - 60_000);
+	fs.utimesSync(path.join(dir, 'kept'), mtime, mtime);
+	assert.deepStrictEqual(rollback(dir, snapshotFiles(dir, ['kept'])), []);
+	assert.ok(Math.abs(fs.statSync(path.join(dir, 'kept')).mtimeMs - mtime.getTime()) < 2, 'the untouched file was not rewritten');
 });
 
 // --- how badly it failed (issue #282) ------------------------------------

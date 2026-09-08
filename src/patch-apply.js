@@ -44,6 +44,13 @@ const JsDiff = require('diff');
 const { normalizeEol } = require('./git-update.cjs');
 const { parsePatchFiles, splitPatchSections, rewritePatchPaths } = require('./patch-plan.cjs');
 const { applyPatch } = require('./git-write.cjs');
+const { windowsArgs } = require('./git-read.cjs');
+
+// How many sections are checked on their own to name what failed. Past this
+// the breakdown is not something a panel can show, and every check is a Git
+// spawn, which on a locked-down Windows laptop with a virus scanner is not
+// free; the refusal itself was decided by the one check of the whole patch.
+const SECTION_DETAIL_LIMIT = 20;
 
 /**
  * Inverts one parsed file so a reverse can be worded: the kinds swap, the
@@ -319,8 +326,20 @@ function snapshotFiles(dir, relPaths) {
  */
 function rollback(dir, snapshot) {
 	const errors = [];
+	const unchanged = (abs, previous) => {
+		try {
+			const now = fs.readFileSync(abs);
+			return previous !== null && now.equals(previous);
+		} catch (e) {
+			return previous === null && e && e.code === 'ENOENT';
+		}
+	};
 	for (const [relPath, previous] of snapshot) {
 		const abs = path.join(dir, relPath);
+		// A file Git never reached is left alone: writing the snapshot back
+		// over it would only move its mtime, or, if something else edited it
+		// between the check and the write, lose that edit.
+		if (unchanged(abs, previous)) continue;
 		try {
 			if (previous === null) {
 				// Removing something that was never created is the desired end
@@ -383,17 +402,31 @@ async function applyPatchToDir({ dir, patchText, reverse = false, onLog = () => 
 
 	if (!applicable.length) {
 		if (!skipped.length) return { ok: false, error: 'The patch does not change any files.', applied: [], skipped };
-		return { ok: false, error: 'The patch does not change any files.', applied: [], skipped };
+		// Only binaries with no data: nothing for Git to do, and nothing wrong
+		// with the patch either. Named, not refused, as the docs promise.
+		onLog(`\nSkipped ${skipped.length} binary file${skipped.length === 1 ? '' : 's'} the app cannot apply: ${skipped.join(', ')}\n`);
+		return { ok: true, applied: [], skipped };
 	}
 	const applyText = applicable.map((section) => section.text).join('');
+	// The worktree view (the `core.autocrlf` view and long paths on Windows)
+	// resolved once: it is a `git config` read on Windows, and the refusal
+	// path below checks section by section.
+	const prefix = await windowsArgs(dir, { platform });
 
-	const check = await applyPatch(dir, applyText, { check: true, reverse, platform });
+	const check = await applyPatch(dir, applyText, { check: true, reverse, platform, prefix });
 	if (!check.ok) {
 		const failures = [];
 		const conflicts = [];
 		let failing = 0;
+		let checked = 0;
 		for (const section of applicable) {
-			const own = await applyPatch(dir, section.text, { check: true, reverse, platform });
+			if (checked >= SECTION_DETAIL_LIMIT) {
+				const rest = applicable.length - checked;
+				failures.push(`${rest} more file${rest === 1 ? ' was' : 's were'} not checked one by one`);
+				break;
+			}
+			checked += 1;
+			const own = await applyPatch(dir, section.text, { check: true, reverse, platform, prefix });
 			if (own.ok) continue;
 			failing += 1;
 			const file = fileFor(section);
@@ -414,8 +447,8 @@ async function applyPatchToDir({ dir, patchText, reverse = false, onLog = () => 
 		// has to be unanimous (#183): every section fails to reverse, and the
 		// whole patch would apply forwards, so a patch that is half in the tree
 		// keeps its record and its conflict.
-		if (reverse && failing === applicable.length) {
-			const forward = await applyPatch(dir, applyText, { check: true, reverse: false, platform });
+		if (reverse && checked === applicable.length && failing === applicable.length) {
+			const forward = await applyPatch(dir, applyText, { check: true, reverse: false, platform, prefix });
 			if (forward.ok) {
 				const error = 'That patch is not in this checkout any more — something reset it, probably a trunk update or a discard. Nothing was reverted.';
 				onLog(`\n${error}\n`);
@@ -437,7 +470,7 @@ async function applyPatchToDir({ dir, patchText, reverse = false, onLog = () => 
 	// from as well as the one it makes.
 	const touched = applicable.flatMap((section) => [section.from, section.path]).filter(Boolean);
 	const snapshot = snapshotFiles(dir, touched);
-	const written = await applyPatch(dir, applyText, { reverse, platform });
+	const written = await applyPatch(dir, applyText, { reverse, platform, prefix });
 	if (!written.ok) {
 		const recovery = rollback(dir, snapshot);
 		const reason = written.stderr.split(/\r?\n/).filter((line) => line.trim()).pop() || `git apply exited ${written.status}`;

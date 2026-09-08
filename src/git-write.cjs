@@ -278,10 +278,12 @@ async function cleanUntracked(dir, { platform = process.platform, run = runGit }
  * @param {boolean}  [options.reverse]
  * @param {string}   [options.platform]
  * @param {Function} [options.run]
+ * @param {string[]} [options.prefix]   The worktree view already resolved, for a
+ *                                      caller that applies many sections in a row.
  * @return {Promise<{ok: boolean, status: number, stderr: string}>}
  */
-async function applyPatch(dir, patchText, { check = false, reverse = false, platform = process.platform, run = runGit } = {}) {
-	const win = await windowsArgs(dir, { platform, run });
+async function applyPatch(dir, patchText, { check = false, reverse = false, platform = process.platform, run = runGit, prefix } = {}) {
+	const win = prefix || await windowsArgs(dir, { platform, run });
 	const args = [...win, 'apply', '--whitespace=nowarn', '-p1', ...(check ? ['--check'] : []), ...(reverse ? ['--reverse'] : []), '-'];
 	const { status, stderr } = await run(args, { cwd: dir, input: Buffer.from(patchText, 'utf8'), okCodes: [0, 1, 128] });
 	return { ok: status === 0, status, stderr };

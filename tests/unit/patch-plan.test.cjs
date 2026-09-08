@@ -303,9 +303,16 @@ test('planApply: a clean tree has no conflicts (issue #11)', () => {
 	assert.deepStrictEqual(planApply({ files, dirtyPaths: [] }).conflicts, []);
 });
 
-test('planApply: binary files are listed as unsupported (issue #11)', () => {
+test('planApply: binary files with no data are listed as unsupported, ones that carry their bytes are not (issue #11, #385)', () => {
 	const { files } = parsePatchFiles(GITHUB_DIFF + BINARY_DIFF);
 	assert.deepStrictEqual(planApply({ files }).unsupported, ['src/x.png']);
+	const withData = 'diff --git a/src/y.png b/src/y.png\nnew file mode 100644\nindex 0000000..1111111\nGIT binary patch\nliteral 8\nPcmeAS@N;KiWMT#Y3Bdt%\n\nliteral 0\nHcmV?d00001\n\n';
+	const parsed = parsePatchFiles(GITHUB_DIFF + BINARY_DIFF + withData);
+	assert.deepStrictEqual(parsed.files.map((f) => [f.path, f.kind, Boolean(f.hasBinaryData)]), [
+		['src/wp-includes/foo.php', 'modify', false], ['src/x.png', 'binary', false], ['src/y.png', 'binary', true]
+	]);
+	assert.deepStrictEqual(planApply({ files: parsed.files }).unsupported, ['src/x.png']);
+	assert.deepStrictEqual(planApply({ files: parsed.files }).paths, ['src/wp-includes/foo.php', 'src/x.png', 'src/y.png']);
 });
 
 test('planApply: an install is needed only when the lockfile is touched (issue #11)', () => {
@@ -480,4 +487,16 @@ test('splitPatchSections: one section per file, binary data told apart from a da
 	assert.deepStrictEqual(splitPatchSections(own).map((s) => [s.path, s.from]), [['gone.php', 'gone.php'], ['new.php', '']]);
 	// A rename names both ends.
 	assert.deepStrictEqual(splitPatchSections('diff --git a/src/old.php b/src/new.php\nsimilarity index 100%\nrename from src/old.php\nrename to src/new.php\n').map((s) => [s.path, s.from]), [['src/new.php', 'src/old.php']]);
+});
+
+// jsdiff drops a section with no hunks whenever another follows it, which
+// used to lose a binary or a pure rename placed before a text file. Parsing
+// section by section makes the file list the section list.
+test('parsePatchFiles: a binary or a pure rename ahead of a text file is not swallowed (#385)', () => {
+	const rename = 'diff --git a/src/old.php b/src/new.php\nsimilarity index 100%\nrename from src/old.php\nrename to src/new.php\n';
+	const { files } = parsePatchFiles(BINARY_DIFF + rename + GITHUB_DIFF + BINARY_DIFF);
+	assert.deepStrictEqual(files.map((f) => [f.kind, f.path]), [
+		['binary', 'src/x.png'], ['rename', 'src/new.php'], ['modify', 'src/wp-includes/foo.php'], ['binary', 'src/x.png']
+	]);
+	assert.strictEqual(files[1].oldPath, 'src/old.php');
 });

@@ -86,45 +86,6 @@ function mapToSrcLayout(filePath) {
 }
 
 /**
- * Walks the raw patch for its per-file section headers.
- *
- * Needed because jsdiff returns the byte-identical shape `[{hunks: []}]` for a
- * binary file, a 100%-similarity rename, and text that is not a patch at all —
- * it keeps neither the filenames nor the marker that tells them apart. Without
- * this, prose pasted in would be reported as a binary file and a pure rename
- * would be rejected as garbage.
- *
- * @param {string} raw
- * @return {Array<{path: string, isBinary: boolean, renameFrom: string, renameTo: string}>}
- */
-function scanSections(raw) {
-	const sections = [];
-	const last = () => sections[sections.length - 1];
-	for (const line of raw.split('\n')) {
-		const git = /^diff --git (?:"?a\/)?(.+?)"? (?:"?b\/)?(.+?)"?$/.exec(line);
-		if (git) {
-			sections.push({ path: git[2] || git[1], isBinary: false, renameFrom: '', renameTo: '' });
-			continue;
-		}
-		const svn = /^Index: (.+)$/.exec(line);
-		if (svn) {
-			sections.push({ path: svn[1].trim(), isBinary: false, renameFrom: '', renameTo: '' });
-			continue;
-		}
-		if (!sections.length) continue;
-		if (/^Binary files .* differ$/.test(line) || /^GIT binary patch$/.test(line)) {
-			last().isBinary = true;
-			continue;
-		}
-		const from = /^rename from (.+)$/.exec(line);
-		if (from) { last().renameFrom = from[1].trim(); continue; }
-		const to = /^rename to (.+)$/.exec(line);
-		if (to) last().renameTo = to[1].trim();
-	}
-	return sections;
-}
-
-/**
  * The raw patch cut into its per-file sections, each with its own text, so
  * one file can be checked on its own (`git apply --check` on a section) and
  * a binary section with no data can be left out of what Git is handed.
@@ -405,34 +366,37 @@ function parsePatchFiles(text) {
 	// applier reads off disk, which is normalised the same way.
 	const normalized = normalizeEol(raw);
 
-	let parsed;
-	try {
-		// Real git carries an empty file added or deleted as headers alone,
-		// with no `---`/`+++` pair for jsdiff to read (#311) — supplying it
-		// here is what lets the rest of this function see those sections at
-		// all, instead of one of them rejecting the whole patch.
-		parsed = JsDiff.parsePatch(supplyEmptyFileHeaders(normalized));
-	} catch (e) {
-		return { ok: false, error: `Could not read the patch: ${String(e && e.message ? e.message : e)}` };
-	}
+	// One section at a time. jsdiff swallows a section with no hunks (a
+	// binary, a pure rename, an empty file) whenever another section follows
+	// it, so parsing the whole text would drop files; cut first, parse each,
+	// and the file list is the section list.
+	const sections = splitPatchSections(normalized);
+	if (!sections.length) return { ok: false, error: 'No file changes found in the patch.' };
 
-	if (!parsed || parsed.length === 0) {
-		return { ok: false, error: 'No file changes found in the patch.' };
-	}
-
-	const sections = scanSections(normalized);
 	const files = [];
-
-	for (let i = 0; i < parsed.length; i++) {
-		const file = parsed[i];
+	for (const section of sections) {
+		if (section.isBinary) {
+			const binaryPath = mapToSrcLayout(stripPathPrefix(section.path, section.path).newPath);
+			files.push({ kind: 'binary', oldPath: binaryPath, newPath: binaryPath, path: binaryPath, hunks: [], patch: { hunks: [] }, hasBinaryData: section.hasBinaryData });
+			continue;
+		}
+		let parsed;
+		try {
+			// Real git carries an empty file added or deleted as headers alone,
+			// with no `---`/`+++` pair for jsdiff to read (#311) — supplying it
+			// here is what lets this section be seen at all.
+			parsed = JsDiff.parsePatch(supplyEmptyFileHeaders(section.text));
+		} catch (e) {
+			return { ok: false, error: `Could not read the patch: ${String(e && e.message ? e.message : e)}` };
+		}
+		const file = parsed && parsed[0];
+		if (!file) return { ok: false, error: 'No file changes found in the patch.' };
 
 		if (!file.hunks || file.hunks.length === 0) {
 			// An empty file added or deleted has no line on either side, so its
 			// section is headers alone (#311). `/dev/null` still says which of
 			// the two it was — the same rule classify() applies to a hunked
-			// section — and it comes off the parsed filenames, so it does not
-			// depend on `sections` lining up with `parsed` (it does not, in a
-			// patch that mixes git-style and bare sections).
+			// section.
 			if (file.oldFileName === '/dev/null' || file.newFileName === '/dev/null') {
 				const empty = stripPathPrefix(file.oldFileName || '', file.newFileName || '');
 				const emptyKind = classify(file, empty.oldPath, empty.newPath);
@@ -447,18 +411,12 @@ function parsePatchFiles(text) {
 				});
 				continue;
 			}
-			// jsdiff kept nothing, so the raw section is the only evidence of
-			// what this was.
-			const section = sections[i];
-			if (section && section.renameFrom && section.renameTo) {
-				const oldPath = mapToSrcLayout(section.renameFrom);
-				const newPath = mapToSrcLayout(section.renameTo);
+			// jsdiff kept nothing, so the section's own headers are the only
+			// evidence of what this was: a pure rename names two files.
+			if (section.from && section.path && section.from !== section.path) {
+				const oldPath = mapToSrcLayout(section.from);
+				const newPath = mapToSrcLayout(section.path);
 				files.push({ kind: 'rename', oldPath, newPath, path: newPath, hunks: [], patch: file });
-				continue;
-			}
-			if (section && section.isBinary) {
-				const binaryPath = mapToSrcLayout(stripPathPrefix(section.path, section.path).newPath);
-				files.push({ kind: 'binary', oldPath: binaryPath, newPath: binaryPath, path: binaryPath, hunks: [], patch: file });
 				continue;
 			}
 			return { ok: false, error: 'That does not look like a patch — no file changes found.' };
@@ -507,9 +465,11 @@ function planApply({ files, dirtyPaths = [] } = {}) {
 	return {
 		paths,
 		conflicts: [...touched].filter((p) => dirty.has(p)),
-		// Binary hunks cannot be applied from a text diff. Naming them is the
-		// difference between "this patch is partly unapplied" and a silent gap.
-		unsupported: list.filter((f) => f.kind === 'binary').map((f) => f.path || '(unnamed binary file)'),
+		// A binary section with no data ("Binary files differ") cannot be
+		// applied from a text diff; one that carries its bytes is applied like
+		// any other file (#385). Naming the first kind is the difference
+		// between "this patch is partly unapplied" and a silent gap.
+		unsupported: list.filter((f) => f.kind === 'binary' && !f.hasBinaryData).map((f) => f.path || '(unnamed binary file)'),
 		// Same rule the trunk update uses (#94): the lockfile moving is what
 		// makes an install necessary rather than merely possible.
 		needsInstall: touched.has('package-lock.json')
