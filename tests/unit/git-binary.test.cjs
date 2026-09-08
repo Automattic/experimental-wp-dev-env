@@ -7,8 +7,8 @@ const { resolveGitBinary, buildGitEnv, BASE_ARGS, SPAWN_OPTIONS } = require('../
 // What the bundled Git is told before it runs — the environment #350's second
 // invariant depends on. These are pure: nothing here spawns anything, so the
 // shape can be checked on any machine with the base env injected, including
-// the one a Node child would have been given and the one a mentor who has
-// tuned their own Git would hand the app.
+// the one a Node child would have been given and the one a contributor who
+// has tuned their own Git on the host would hand the app.
 
 const BUNDLED = path.join('node_modules', 'dugite', 'git') + path.sep;
 
@@ -62,7 +62,7 @@ test('a host that points at its own Git through the real process env still gets 
 });
 
 test('the environment pins host config off and prompting off', () => {
-	const env = buildGitEnv({ baseEnv: { HOME: '/home/mentor', PATH: '/usr/bin' } });
+	const env = buildGitEnv({ baseEnv: { HOME: '/home/contributor', PATH: '/usr/bin' } });
 	assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
 	assert.equal(env.GIT_CONFIG_GLOBAL, '/dev/null');
 	assert.equal(env.GIT_TERMINAL_PROMPT, '0');
@@ -70,7 +70,7 @@ test('the environment pins host config off and prompting off', () => {
 	assert.ok(env.GIT_EXEC_PATH, 'GIT_EXEC_PATH is unset');
 	assert.ok(path.isAbsolute(env.GIT_EXEC_PATH));
 	// The rest of the base env still comes through.
-	assert.equal(env.HOME, '/home/mentor');
+	assert.equal(env.HOME, '/home/contributor');
 	assert.ok(env.PATH.includes('/usr/bin'));
 	// No pinned value is an empty string: Windows may drop it from the block.
 	for (const [name, value] of Object.entries(env)) {
@@ -119,7 +119,7 @@ test('a caller can add to the environment but cannot unpin or redirect it', () =
 
 	for (const extraEnv of [
 		{ GIT_CONFIG_NOSYSTEM: '0' },
-		{ git_config_global: '/home/mentor/.gitconfig' },
+		{ git_config_global: '/home/contributor/.gitconfig' },
 		{ GIT_DIR: '/somewhere/else/.git' },
 		{ GIT_CONFIG_COUNT: '1' },
 		{ GIT_ASKPASS: '/usr/local/bin/ask' },

@@ -75,8 +75,8 @@ test('the exec path Git was told about exists and is populated', () => {
 });
 
 test('neither the host system nor the host global gitconfig is read', (t) => {
-	// GIT_CONFIG_NOSYSTEM keeps a mentor's /etc/gitconfig out and
-	// GIT_CONFIG_GLOBAL=/dev/null their ~/.gitconfig; the latter also proves
+	// GIT_CONFIG_NOSYSTEM keeps the host's /etc/gitconfig out and
+	// GIT_CONFIG_GLOBAL=/dev/null its ~/.gitconfig; the latter also proves
 	// that literal is accepted on this platform. Git reports the files it
 	// would read through `config --show-origin`; with both scopes off, the
 	// only entries left are the repository's own and the `-c` overrides.

@@ -23,8 +23,8 @@
 // inherited.
 //
 // Nothing Git reads from the environment is inherited from the host either.
-// dugite itself honours LOCAL_GIT_DIRECTORY and GIT_EXEC_PATH, so a mentor
-// who exported either would swap the bundled binary for whatever they point
+// dugite itself honours LOCAL_GIT_DIRECTORY and GIT_EXEC_PATH, so a host
+// that exported either would swap the bundled binary for whatever it points
 // at; GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE would redirect every command
 // to a repository the app never chose; GIT_CONFIG_COUNT would inject config.
 // Every `GIT_*` variable is therefore dropped before dugite sees the base env
@@ -66,12 +66,12 @@ const REDIRECT_ENV = Object.freeze([
 // an empty variable is not guaranteed to survive a Windows environment block.
 const PINNED_ENV = Object.freeze({
 	// dugite's own system gitconfig `include`s the host's /etc/gitconfig, so
-	// without this a mentor's machine could change what the app does. On
+	// without this the host machine could change what the app does. On
 	// Windows this also drops MinGit's system config (autocrlf, the
 	// credential manager, the SSL backend), which a later phase pins itself
 	// with `-c` once a flow needs them.
 	GIT_CONFIG_NOSYSTEM: '1',
-	// The global config is the mentor's ~/.gitconfig: url.insteadOf,
+	// The global config is the host user's ~/.gitconfig: url.insteadOf,
 	// core.hooksPath, commit.gpgsign or filter.lfs there would all change
 	// what the app does (and LFS is trimmed from the bundle). Git documents
 	// /dev/null as "no file" for this variable, and Git for Windows maps the
@@ -124,7 +124,7 @@ function assertExtraEnv(extraEnv) {
 // from. Its resolvers (`resolveGitDir`, `resolveGitExecPath`) take the value
 // they were handed as a parameter with `process.env` as the default, so a
 // variable absent from the base env is read straight back from the real
-// process environment, and the mentor's exported LOCAL_GIT_DIRECTORY wins
+// process environment, and the host's exported LOCAL_GIT_DIRECTORY wins
 // after all. Both are therefore present and empty while dugite resolves:
 // empty is a value, so the default never applies, and empty is falsy, so
 // dugite falls through to the embedded tree. GIT_EXEC_PATH comes back set
