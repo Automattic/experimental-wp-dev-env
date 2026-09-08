@@ -7,12 +7,11 @@ const os = require('os');
 const path = require('path');
 const git = require('isomorphic-git');
 const JsDiff = require('diff');
-const { applyPatchToDir, resolveInside, dominantEol, rollback, diagnoseHunks } = require('../../src/patch-apply');
+const { applyPatchToDir, rollback, snapshotFiles, diagnoseHunks } = require('../../src/patch-apply');
 const { parsePatchFiles } = require('../../src/patch-plan.cjs');
 
-// A real on-disk repo, like trunk-update.integration.test.cjs: applyPatchToDir
-// calls ensureAutocrlf, which reads and writes git config, so a bare temp
-// directory would not exercise the same path.
+// A real on-disk repo: the applier hands the patch to the bundled Git, which
+// wants a repository to apply into (and refuses paths outside it).
 async function makeRepo(t, files) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-test-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -284,6 +283,35 @@ Binary files a/src/x.png and b/src/x.png differ
 	assert.deepStrictEqual(res.skipped, ['src/x.png']);
 });
 
+// A binary section that carries its data (`GIT binary patch`, what
+// `git diff --binary` and GitHub's `.diff` for a pull request emit) is
+// Git's to apply now; only the data-less "Binary files differ" line is
+// still skipped and named.
+test('applyPatchToDir: a binary file whose section carries its data is applied (#385)', async (t) => {
+	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]);
+	// Made by the bundled Git in a scratch repository, so the section is the
+	// real shape rather than a hand-typed one.
+	const { git: bin, tempDir } = require('./helpers/git.cjs');
+	const scratch = tempDir(t, 'patch-apply-binary-');
+	bin(['init', '-q', '-b', 'trunk'], scratch);
+	fs.mkdirSync(path.join(scratch, 'src', 'images'), { recursive: true });
+	fs.writeFileSync(path.join(scratch, 'src', 'images', 'dot.png'), bytes);
+	bin(['add', '-A'], scratch);
+	// Through a file, not stdout: the helper trims stdout and the blank line
+	// that closes the base85 data is part of the format.
+	const out = path.join(scratch, 'binary.diff');
+	bin(['diff', '--cached', '--binary', '--output', out], scratch);
+	const patchText = fs.readFileSync(out, 'utf8');
+
+	const res = await applyPatchToDir({ dir, patchText });
+
+	assert.strictEqual(res.ok, true, res.error);
+	assert.deepStrictEqual(res.applied, ['src/images/dot.png']);
+	assert.deepStrictEqual(res.skipped, []);
+	assert.deepStrictEqual([...fs.readFileSync(path.join(dir, 'src', 'images', 'dot.png'))], [...bytes]);
+});
+
 test('applyPatchToDir: an unreadable patch reports why and changes nothing (issue #11)', async (t) => {
 	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
 	const before = snapshot(dir);
@@ -376,43 +404,24 @@ deleted file mode 100644
 // wordpress-develop carries fixtures whose line endings are the thing under
 // test; rewriting them to LF because a patch touched the file would corrupt
 // exactly those.
-test('applyPatchToDir: a CRLF file keeps CRLF after patching (issue #11)', async (t) => {
+// A CRLF checkout is what a host Git with `core.autocrlf=true` leaves on
+// Windows. There, the `core.autocrlf` view every worktree command carries
+// (windowsArgs) lets an LF patch fit and keeps the file CRLF; on macOS the
+// same file is refused, which is the documented limit of the move to
+// `git apply` (a site the app cloned is LF, so it never meets it).
+test('applyPatchToDir: an LF patch fits a CRLF file under the Windows view, and is refused without it (issue #11)', async (t) => {
 	const dir = await makeRepo(t, { [FOO]: FOO_BODY.replace(/\n/g, '\r\n') });
-	const res = await applyPatchToDir({ dir, patchText: FOO_PATCH });
+	const refused = await applyPatchToDir({ dir, patchText: FOO_PATCH, platform: 'darwin' });
+	assert.strictEqual(refused.ok, false);
+	assert.strictEqual(fs.readFileSync(path.join(dir, FOO), 'utf8'), 'one\r\ntwo\r\nthree\r\n', 'nothing written');
+
+	const res = await applyPatchToDir({ dir, patchText: FOO_PATCH, platform: 'win32' });
 	assert.strictEqual(res.ok, true, res.error);
 	assert.strictEqual(fs.readFileSync(path.join(dir, FOO), 'utf8'), 'one\r\nTWO\r\nthree\r\n');
 });
 
-test('dominantEol: reports the ending a file actually uses (issue #11)', () => {
-	assert.strictEqual(dominantEol('a\nb\n'), '\n');
-	assert.strictEqual(dominantEol('a\r\nb\r\n'), '\r\n');
-	assert.strictEqual(dominantEol(''), '\n');
-	// A mostly-LF file with one stray CRLF stays LF.
-	assert.strictEqual(dominantEol('a\nb\nc\r\nd\ne\n'), '\n');
-});
-
-// resolveInside is exported so both the lexical and the symlink case can be
-// exercised from one machine, the way win-spawn-patch.test.cjs does.
-test('resolveInside: refuses paths that climb out, allows ones that stay in (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
-	assert.notStrictEqual(resolveInside(dir, 'src/wp-includes/foo.php'), null);
-	assert.notStrictEqual(resolveInside(dir, 'src/does/not/exist/yet.php'), null);
-	assert.strictEqual(resolveInside(dir, '../escaped.txt'), null);
-	assert.strictEqual(resolveInside(dir, 'src/../../escaped.txt'), null);
-	assert.strictEqual(resolveInside(dir, path.resolve(os.tmpdir(), 'absolute.txt')), null);
-});
-
-// path.resolve normalises ".." but not symlinks, so a lexical-only check lets a
-// patch write through a symlinked directory to anywhere on disk.
-test('resolveInside: refuses a path leading through a symlink out of the tree (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-outside-'));
-	t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
-	fs.symlinkSync(outside, path.join(dir, 'escape-hatch'), 'dir');
-
-	assert.strictEqual(resolveInside(dir, 'escape-hatch/evil.txt'), null);
-});
-
+// Git refuses a path beyond a symbolic link on its own; the sentence the
+// contributor reads is this module's, and it has to say where it pointed.
 test('applyPatchToDir: a patch through a symlinked directory is refused (issue #11)', async (t) => {
 	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
 	const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-outside-'));
@@ -609,33 +618,38 @@ new file mode 100644
 
 // A rollback can hit the same fault that broke the write. rollback must report
 // what it could not restore so the caller stops claiming a clean tree. Driven
-// directly with an un-restorable action (its parent is a file → ENOTDIR), which
+// directly with an un-restorable entry (its parent is a file → ENOTDIR), which
 // fails the same way whether or not the tests run as root. (Copilot #4.)
 test('rollback: reports the paths it could not restore instead of swallowing them (issue #11)', async (t) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-rollback-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	fs.writeFileSync(path.join(dir, 'afile'), 'i am a file\n');
 
-	// Restoring this action means writing under `afile`, which is a file, not a
+	// Restoring this entry means writing under `afile`, which is a file, not a
 	// directory — mkdirSync/writeFileSync throw ENOTDIR.
-	const recovery = rollback([
-		{ op: 'write', abs: path.join(dir, 'afile', 'child'), path: 'afile/child', previous: Buffer.from('x') }
-	]);
+	const recovery = rollback(dir, new Map([['afile/child', Buffer.from('x')]]));
 
 	assert.ok(Array.isArray(recovery) && recovery.length === 1);
 	assert.match(recovery[0], /afile\/child/);
 });
 
 // The clean path still returns no recovery errors, so the caller reports a real
-// rollback as one.
+// rollback as one; and the snapshot records an absent file as null, which the
+// rollback turns into a removal.
 test('rollback: returns an empty list when it restores everything (issue #11)', async (t) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-rollback-ok-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	fs.writeFileSync(path.join(dir, 'kept'), 'before\n');
+	const taken = snapshotFiles(dir, ['kept', 'added', 'kept']);
+	assert.deepStrictEqual([...taken.keys()], ['kept', 'added']);
+	assert.strictEqual(taken.get('added'), null);
+	fs.writeFileSync(path.join(dir, 'kept'), 'after\n');
 	fs.writeFileSync(path.join(dir, 'added'), 'new\n');
 
-	const recovery = rollback([{ op: 'write', abs: path.join(dir, 'added'), path: 'added', previous: null }]);
+	const recovery = rollback(dir, taken);
 
 	assert.deepStrictEqual(recovery, []);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'kept'), 'utf8'), 'before\n');
 	assert.strictEqual(fs.existsSync(path.join(dir, 'added')), false, 'an added file is removed on rollback');
 });
 

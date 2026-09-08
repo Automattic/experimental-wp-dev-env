@@ -26,7 +26,7 @@ const {
 const { buildMenuTemplate } = require('./menu');
 const { killChildTree } = require('./kill-tree');
 const { normalizeEol } = require('./git-update.cjs');
-const { ensureAutocrlf, readTrunkInfo, collectDirtyFiles, discardChanges, discardToBase, updateToLatestTrunk } = require('./trunk-update');
+const { readTrunkInfo, collectDirtyFiles, discardChanges, discardToBase, updateToLatestTrunk } = require('./trunk-update');
 const { applyPatchToDir } = require('./patch-apply');
 const { parsePatchFiles, planApply } = require('./patch-plan.cjs');
 const { fetchLinkedPrs, fetchPrDiff } = require('./github-prs');
@@ -458,11 +458,6 @@ function buildPatchHtml(content) {
 // Returns the base commit alongside the files because the pull request needs it
 // as the commit's parent, and it is the same oid the diff was taken against.
 async function collectChangedFiles(dir, baseOid = null) {
-    // Still the first call, and still awaited: the sites:add and patch tests
-    // end the handler here, and a directory that is not a repository fails
-    // here too. Line endings themselves are the binary's business now
-    // (crlfArgs in git-read.cjs).
-    await ensureAutocrlf(dir);
     // The diff base is the branch point of whatever ticket is being worked on
     // (#108) — the trunk snapshot this branch was created from, passed in by the
     // caller from the site's registry entry.
@@ -1105,8 +1100,7 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
  * export and opening a pull request are deliberately not behind it: they are
  * how the work leaves, and none of them touches the checkout. One write
  * outside the checkout still reaches such a site on purpose: `site:status`
- * keeps `.git/info/exclude` current. (`ensureAutocrlf`, which the export
- * still calls, is an in-memory view for isomorphic-git and writes nothing.)
+ * keeps `.git/info/exclude` current.
  *
  * The export covers the branch that is checked out. Work parked on another
  * ticket's branch needs a switch to reach, and the switch is refused, so it
@@ -1949,9 +1943,9 @@ ipcMain.handle('sites:set-skip-init', async (_e, sitePath, skip) => {
 });
 
 ipcMain.handle('sites:add', async (_e, sitePath) => {
-	// A pre-existing dir was likely cloned by native git — exactly the case
-	// where CRLF checkouts break status/patch generation (see ensureAutocrlf).
-	await ensureAutocrlf(sitePath);
+	// A pre-existing dir was likely cloned by a host Git, CRLF on Windows and
+	// all; the reads and writes carry the `core.autocrlf` view for it
+	// (windowsArgs in git-read.cjs), so nothing has to be written here.
 	await ensureLocalExcludes(sitePath);
 	const s = await getStore();
 	const sites = s.get('sites');

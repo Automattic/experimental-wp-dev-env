@@ -2,10 +2,11 @@
 
 /**
  * The writes the bundled Git makes inside an existing repository (#385): the
- * index, a tree, a commit, a ref, a checkout, a fetch, a clean. Primitives
+ * index, a tree, a commit, a ref, a checkout, a fetch, a clean, a patch
+ * applied. Primitives
  * only, one Git command each, with no knowledge of tickets or trunk;
- * ticket-branches.js and trunk-update.js compose them and own the
- * invariants. Same split as git-read.cjs, and for the same reason: an
+ * ticket-branches.js, trunk-update.js and patch-apply.js compose them and
+ * own the invariants. Same split as git-read.cjs, and for the same reason: an
  * argument list is testable on an injected runner, a flow is testable on a
  * real repository, and mixing the two hides which one broke.
  *
@@ -253,6 +254,39 @@ async function cleanUntracked(dir, { platform = process.platform, run = runGit }
 	await run([...win, 'clean', '-fd'], { cwd: dir });
 }
 
+/**
+ * Applies a patch to the worktree, or checks whether it would apply. The
+ * text goes in on stdin with `-p1` (every path has been rewritten to `a/`
+ * and `b/` by patch-plan.cjs), no `--index` so the index is untouched and a
+ * new file stays untracked (the residue `staleStagedPaths` exists for is
+ * never made), and `--whitespace=nowarn` because a trailing space in a Trac
+ * attachment is the patch's business, not a reason to print. Git is all or
+ * nothing on its own: a `--check` that fails names every file that does not
+ * fit, and a real apply writes nothing when any hunk fails; only an I/O
+ * failure part-way (a file held open, a full disk) leaves earlier files
+ * written, which is what the caller's snapshot is for.
+ *
+ * Exit 1 is "does not apply" and 128 is a patch Git refuses outright (a path
+ * outside the tree, a binary section with no data); both come back as
+ * `ok: false` with the stderr for the log. Nothing in it is parsed: which
+ * files failed is found by checking each file's section on its own.
+ *
+ * @param {string}   dir
+ * @param {string}   patchText
+ * @param {Object}   [options]
+ * @param {boolean}  [options.check]    `--check`: decide, write nothing.
+ * @param {boolean}  [options.reverse]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]
+ * @return {Promise<{ok: boolean, status: number, stderr: string}>}
+ */
+async function applyPatch(dir, patchText, { check = false, reverse = false, platform = process.platform, run = runGit } = {}) {
+	const win = await windowsArgs(dir, { platform, run });
+	const args = [...win, 'apply', '--whitespace=nowarn', '-p1', ...(check ? ['--check'] : []), ...(reverse ? ['--reverse'] : []), '-'];
+	const { status, stderr } = await run(args, { cwd: dir, input: Buffer.from(patchText, 'utf8'), okCodes: [0, 1, 128] });
+	return { ok: status === 0, status, stderr };
+}
+
 module.exports = {
 	stagePaths,
 	unstagePaths,
@@ -264,5 +298,6 @@ module.exports = {
 	deleteBranch,
 	checkoutBranch,
 	fetchBranch,
-	cleanUntracked
+	cleanUntracked,
+	applyPatch
 };

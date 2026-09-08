@@ -23,5 +23,5 @@ Two things this skill adds on top:
 
 ## Notes
 
-- Complements the built-in `/code-review` and `/security-review`. What this adds is the repo-specific knowledge: Electron's bundled Node, `isomorphic-git`, `electron-store`, loopback binding, the Windows spawn shims.
+- Complements the built-in `/code-review` and `/security-review`. What this adds is the repo-specific knowledge: Electron's bundled Node, the bundled Git and its primitives, `electron-store`, loopback binding, the Windows spawn shims.
 - If a finding reveals a rule the instructions file does not yet cover, say so. It is meant to accumulate what the project learns.

@@ -125,6 +125,164 @@ function scanSections(raw) {
 }
 
 /**
+ * The raw patch cut into its per-file sections, each with its own text, so
+ * one file can be checked on its own (`git apply --check` on a section) and
+ * a binary section with no data can be left out of what Git is handed.
+ *
+ * A section starts at a `diff --git` or `Index:` line, or, for a patch with
+ * neither (this app's own output, a hand-written minimal patch), at its
+ * `---` line. Text before the first section (a Trac comment, this app's
+ * "files not in this patch" block) belongs to no section and is dropped: it
+ * is prose, and `git apply` ignores it too.
+ *
+ * `path` is the file the section ends on; `from` the one it starts from
+ * (the same file for a modify, the source of a rename, empty for an add).
+ *
+ * @param {string} text EOL-normalised patch text.
+ * @return {Array<{path: string, from: string, text: string, isBinary: boolean, hasBinaryData: boolean}>}
+ */
+function splitPatchSections(text) {
+	const lines = text.split('\n');
+	// A text that ends in a newline splits into a trailing empty string that
+	// is not a line; every real line, an empty one included, gets its newline
+	// back below.
+	if (lines.length && lines[lines.length - 1] === '') lines.pop();
+	const sections = [];
+	let current = null;
+	const startsSection = (line, i) => {
+		if (line.startsWith('diff --git ') || line.startsWith('Index: ')) return true;
+		// A bare `---` opens a section only when the previous line did not
+		// (a `diff --git` section has its own `---` inside).
+		if (line.startsWith('--- ') && lines[i + 1] && lines[i + 1].startsWith('+++ ')) {
+			return !current || current.sawHeader;
+		}
+		return false;
+	};
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (startsSection(line, i)) {
+			current = { path: '', from: '', lines: [], isBinary: false, hasBinaryData: false, sawHeader: false };
+			sections.push(current);
+			const git = /^diff --git (?:"?a\/)?(.+?)"? (?:"?b\/)?(.+?)"?$/.exec(line);
+			const svn = /^Index: (.+)$/.exec(line);
+			if (git) { current.from = git[1]; current.path = git[2] || git[1]; }
+			else if (svn) { current.path = svn[1].trim(); current.from = current.path; }
+			else { current.from = line.slice(4).replace(/^[ab]\//, '').replace(/\t.*$/, ''); current.path = current.from; }
+		}
+		if (!current) continue;
+		current.lines.push(line);
+		const named = (l) => l.slice(4).replace(/\t.*$/, '');
+		if (line.startsWith('+++ ')) {
+			current.sawHeader = true;
+			const to = named(line);
+			current.path = to === '/dev/null' ? current.path : to.replace(/^[ab]\//, '');
+		} else if (line.startsWith('--- ') && !current.sawHeader) {
+			const from = named(line);
+			current.from = from === '/dev/null' ? '' : from.replace(/^[ab]\//, '');
+			if (!current.path) current.path = current.from;
+		}
+		const renameFrom = /^rename from (.+)$/.exec(line);
+		if (renameFrom) current.from = renameFrom[1].trim();
+		const renameTo = /^rename to (.+)$/.exec(line);
+		if (renameTo) current.path = renameTo[1].trim();
+		if (/^Binary files .* differ$/.test(line)) current.isBinary = true;
+		if (/^GIT binary patch$/.test(line)) { current.isBinary = true; current.hasBinaryData = true; }
+	}
+	const clean = (p) => (p === '/dev/null' ? '' : p);
+	return sections.map(({ path: sectionPath, from, lines: sectionLines, isBinary, hasBinaryData }) => ({
+		path: clean(sectionPath),
+		from: clean(from),
+		text: `${sectionLines.join('\n')}\n`,
+		isBinary,
+		hasBinaryData
+	}));
+}
+
+// The header lines that carry a path, and how the path sits in each.
+const PATH_LINES = [
+	[/^(--- )(.+)$/, 'a'],
+	[/^(\+\+\+ )(.+)$/, 'b'],
+	[/^(rename from )(.+)$/, ''],
+	[/^(rename to )(.+)$/, ''],
+	[/^(copy from )(.+)$/, ''],
+	[/^(copy to )(.+)$/, '']
+];
+
+/**
+ * The patch with every path rewritten to where the file lives today, in the
+ * `a/`/`b/` form `git apply -p1` reads (#385). The same rules
+ * `parsePatchFiles` applies (`stripPathPrefix`, `mapToSrcLayout`), applied to
+ * the text instead of to the parsed result, so what Git is handed names the
+ * same files the preview showed. Everything that is not a path header,
+ * binary data included, passes through byte for byte. A `--- ` line inside
+ * a hunk is a context line whose content starts with `-- `, not a header;
+ * the one that opens a file always has `+++ ` on the next line.
+ *
+ * Quoted paths (Git's C-style escapes for unusual characters) are refused
+ * with the sentence the empty-file reader already uses: decoding them is
+ * outside the narrow reader (#316), and a path Git would read differently
+ * from the preview is worse than a refusal.
+ *
+ * @param {string} text EOL-normalised patch text.
+ * @return {string}
+ */
+function rewritePatchPaths(text) {
+	const lines = text.split('\n');
+	const out = [];
+	const rewrite = (raw, letter) => {
+		// jsdiff and Subversion put a tab and a note after the name
+		// (`\t(revision 59234)`, or a bare tab); the name ends at the tab.
+		const stripped = raw.replace(/\t.*$/, '');
+		if (stripped === '/dev/null') return stripped;
+		if (stripped.startsWith('"')) throw new Error('The empty file path is quoted or ambiguous.');
+		const { newPath } = stripPathPrefix(`a/${stripped.replace(/^[ab]\//, '')}`, `b/${stripped.replace(/^[ab]\//, '')}`);
+		const mapped = mapToSrcLayout(newPath);
+		return letter ? `${letter}/${mapped}` : mapped;
+	};
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const git = /^diff --git (.+)$/.exec(line);
+		if (git) {
+			const rest = git[1];
+			if (rest.startsWith('"')) throw new Error('The empty file path is quoted or ambiguous.');
+			let sides = null;
+			// The one unambiguous split of `a/X b/Y`: when both sides are
+			// the same path (an add, a delete, a modify) the length fixes
+			// it; otherwise the first ` b/` after `a/` is the seam, which
+			// is right for every path without ` b/` inside it.
+			const same = samePathFromGitDiffLine(line);
+			if (same) sides = [same, same];
+			else {
+				const seam = rest.indexOf(' b/');
+				if (rest.startsWith('a/') && seam > 2) sides = [rest.slice(2, seam), rest.slice(seam + 3)];
+			}
+			if (sides) out.push(`diff --git a/${mapToSrcLayout(sides[0].replace(/^trunk\//, ''))} b/${mapToSrcLayout(sides[1].replace(/^trunk\//, ''))}`);
+			else out.push(line);
+			continue;
+		}
+		const svn = /^Index: (.+)$/.exec(line);
+		if (svn) {
+			out.push(`Index: ${mapToSrcLayout(svn[1].trim().replace(/^trunk\//, ''))}`);
+			continue;
+		}
+		let done = false;
+		for (const [pattern, letter] of PATH_LINES) {
+			const m = pattern.exec(line);
+			if (!m) continue;
+			// `--- ` is a header only when `+++ ` follows; `+++ ` only when
+			// `--- ` preceded. Anything else is hunk content.
+			if (letter === 'a' && !(lines[i + 1] || '').startsWith('+++ ')) break;
+			if (letter === 'b' && !(lines[i - 1] || '').startsWith('--- ')) break;
+			out.push(`${m[1]}${rewrite(m[2], letter)}`);
+			done = true;
+			break;
+		}
+		if (!done) out.push(line);
+	}
+	return out.join('\n');
+}
+
+/**
  * The one path named by a `diff --git a/<path> b/<path>` line whose two sides
  * are the same file — the only shape an added or deleted file can have.
  *
@@ -364,5 +522,7 @@ module.exports = {
 	stripPathPrefix,
 	mapToSrcLayout,
 	parsePatchFiles,
+	splitPatchSections,
+	rewritePatchPaths,
 	planApply
 };

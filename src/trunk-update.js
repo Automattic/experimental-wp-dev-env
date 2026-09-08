@@ -15,12 +15,6 @@
  * before this module is called (`legacySiteBlock` in main.js), so there is
  * no site left whose history a depth-less fetch would pull in.
  *
- * `ensureAutocrlf` / `createCrlfCompatibleFs` are still exported for their
- * three callers (`collectChangedFiles` in patch-apply.js, the patch export
- * and `sites:add` in main.js), none of which uses the view they return now
- * that no read or write runs on isomorphic-git; they leave with the patch
- * flow. Nothing in this file uses them any more.
- *
  * main.js owns the IPC plumbing and electron-store writes; the pure
  * status-row/oid decision rules live in git-update.cjs.
  */
@@ -35,80 +29,6 @@ const {
 } = require('./git-update.cjs');
 const { readCommitInfo, resolveRef, currentBranch, isAncestor, statusRows, readBlobs, blobOid } = require('./git-read.cjs');
 const { fetchBranch, unstagePaths, updateBranch, checkoutBranch, cleanUntracked } = require('./git-write.cjs');
-
-/**
- * Give isomorphic-git a Windows-only, in-memory view of core.autocrlf=true
- * when the repository has no explicit local value. Native Git may have
- * checked the worktree out as CRLF because of the contributor's global config,
- * which isomorphic-git does not read; without this view, statusMatrix reports
- * roughly 5,000 phantom modifications (isomorphic-git#1275).
- *
- * The wrapper intercepts only reads of Git's config file. It never writes the
- * repository, and explicit local values (true, false, or input) pass through
- * unchanged. Non-Windows platforms use the original filesystem untouched.
- *
- * @param {string}    dir
- * @param {Object}    [options]
- * @param {string}    [options.platform]
- * @param {typeof fs} [options.fileSystem]
- * @param {Function}  [options.onError]
- * @return {typeof fs}
- */
-function createCrlfCompatibleFs(dir, {
-	platform = process.platform,
-	fileSystem = fs,
-	onError = (error) => process.emitWarning(
-		`Could not provide CRLF compatibility for ${dir}: ${String(error && error.message ? error.message : error)}`,
-		{ code: 'WCT_CRLF_CONFIG' }
-	)
-} = {}) {
-	if (platform !== 'win32') return fileSystem;
-
-	const dotGitPath = path.resolve(dir, '.git');
-	let configPath = path.join(dotGitPath, 'config');
-	const promises = Object.create(fileSystem.promises);
-	Object.defineProperty(promises, 'readFile', {
-		enumerable: true,
-		value: async (filepath, options) => {
-			let content;
-			try {
-				content = await fileSystem.promises.readFile(filepath, options);
-			} catch (error) {
-				if (path.resolve(String(filepath)) === configPath) onError(error);
-				throw error;
-			}
-			const resolvedPath = path.resolve(String(filepath));
-			if (resolvedPath === dotGitPath) {
-				const gitdir = String(content).match(/^gitdir:\s*(.+)\s*$/im);
-				if (gitdir) configPath = path.resolve(dir, gitdir[1].trim(), 'config');
-				return content;
-			}
-			if (resolvedPath !== configPath) return content;
-
-			const text = Buffer.isBuffer(content) ? content.toString('utf8') : String(content);
-			let inCore = false;
-			const hasAutocrlf = text.split(/\r?\n/).some((line) => {
-				const section = line.match(/^\s*\[([^\]]+)\]\s*(?:[#;].*)?$/);
-				if (section) {
-					inCore = section[1].trim().toLowerCase() === 'core';
-					return false;
-				}
-				return inCore && /^\s*autocrlf\s*=/.test(line.toLowerCase());
-			});
-			if (hasAutocrlf) return content;
-
-			const compatible = `${text.replace(/\s*$/, '')}\n[core]\n\tautocrlf = true\n`;
-			return Buffer.isBuffer(content) ? Buffer.from(compatible, 'utf8') : compatible;
-		}
-	});
-	const compatibleFs = Object.create(fileSystem);
-	Object.defineProperty(compatibleFs, 'promises', { enumerable: true, value: promises });
-	return compatibleFs;
-}
-
-async function ensureAutocrlf(dir, options) {
-	return createCrlfCompatibleFs(dir, options);
-}
 
 /**
  * The commit the site's `trunk` branch points at; its committer date is the age
@@ -335,8 +255,6 @@ async function updateToLatestTrunk({ dir, onLog = () => {}, onChild = null }) {
 }
 
 module.exports = {
-	ensureAutocrlf,
-	createCrlfCompatibleFs,
 	readTrunkInfo,
 	collectDirtyFiles,
 	discardChanges,

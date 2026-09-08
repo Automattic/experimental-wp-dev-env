@@ -6,6 +6,8 @@ const {
 	stripPathPrefix,
 	mapToSrcLayout,
 	parsePatchFiles,
+	splitPatchSections,
+	rewritePatchPaths,
 	planApply
 } = require('../../src/patch-plan.cjs');
 const { updateStepStatuses, SKIP_INSTALL_MESSAGE, BUILD_BY_WATCHER_MESSAGE, planApplySteps, planWatchImpact, APPLY_STATE_TO_STEP } = require('../../src/renderer/update-plan.cjs');
@@ -428,4 +430,54 @@ test('parsePatchFiles: a deletion in this app\'s own generated shape is a delete
 	assert.strictEqual(res.ok, true, res.error);
 	assert.strictEqual(res.files[0].kind, 'delete');
 	assert.strictEqual(res.files[0].path, 'src/old.php');
+});
+
+// --- what Git is handed (#385) --------------------------------------------
+//
+// `git apply -p1` reads the paths off the headers, so the rewrite the parser
+// applies to its result has to be applied to the text as well, and the two
+// have to agree: the preview names the file, Git writes it.
+
+test('rewritePatchPaths: every header shape lands on the path the parser reports (#385)', () => {
+	for (const text of [GITHUB_DIFF, TRAC_SVN_DIFF, OLD_LAYOUT_DIFF, ADD_DIFF, DELETE_DIFF]) {
+		const rewritten = rewritePatchPaths(text);
+		const [file] = parsePatchFiles(text).files;
+		const [section] = splitPatchSections(rewritten);
+		assert.strictEqual(section.path, file.path, text.split('\n')[0]);
+		assert.match(rewritten, new RegExp(`\\+\\+\\+ ${file.kind === 'delete' ? '/dev/null' : `b/${file.path.replace(/[.]/g, '\\.')}`}`));
+	}
+	// The Trac shapes, spelled out: no prefix and an old layout both become a/ b/ under src/.
+	assert.match(rewritePatchPaths(OLD_LAYOUT_DIFF), /^--- a\/src\/wp-admin\/admin\.php\n\+\+\+ b\/src\/wp-admin\/admin\.php$/m);
+	assert.match(rewritePatchPaths(OLD_LAYOUT_DIFF), /^Index: src\/wp-admin\/admin\.php$/m);
+	assert.match(rewritePatchPaths(TRAC_SVN_DIFF), /^--- a\/src\/wp-includes\/foo\.php\n\+\+\+ b\/src\/wp-includes\/foo\.php$/m, 'the tab and revision note go with the prefix');
+	// Hunk content that starts like a header is content.
+	const tricky = 'diff --git a/src/x.php b/src/x.php\n--- a/src/x.php\n+++ b/src/x.php\n@@ -1,2 +1,2 @@\n-- one\n+-- two\n';
+	assert.strictEqual(rewritePatchPaths(tricky), tricky);
+});
+
+test('rewritePatchPaths: renames, the old trunk/ prefix and /dev/null with a trailing tab (#385)', () => {
+	const rename = 'diff --git a/wp-admin/old.php b/wp-admin/new.php\nsimilarity index 90%\nrename from wp-admin/old.php\nrename to wp-admin/new.php\n--- a/wp-admin/old.php\n+++ b/wp-admin/new.php\n@@ -1 +1 @@\n-a\n+b\n';
+	assert.strictEqual(rewritePatchPaths(rename), 'diff --git a/src/wp-admin/old.php b/src/wp-admin/new.php\nsimilarity index 90%\nrename from src/wp-admin/old.php\nrename to src/wp-admin/new.php\n--- a/src/wp-admin/old.php\n+++ b/src/wp-admin/new.php\n@@ -1 +1 @@\n-a\n+b\n');
+	assert.match(rewritePatchPaths('Index: trunk/wp-login.php\n--- trunk/wp-login.php\t(revision 1)\n+++ trunk/wp-login.php\t(working copy)\n@@ -1 +1 @@\n-a\n+b\n'), /^--- a\/src\/wp-login\.php\n\+\+\+ b\/src\/wp-login\.php$/m);
+	// jsdiff writes a tab after the name, /dev/null included.
+	assert.match(rewritePatchPaths('--- a/gone.php\t\n+++ /dev/null\t\n@@ -1,1 +0,0 @@\n-x\n'), /^--- a\/gone\.php\n\+\+\+ \/dev\/null$/m);
+	assert.throws(() => rewritePatchPaths('diff --git "a/we\\303\\251.php" "b/we\\303\\251.php"\n--- "a/we\\303\\251.php"\n+++ "b/we\\303\\251.php"\n@@ -1 +1 @@\n-a\n+b\n'), /quoted or ambiguous/);
+});
+
+test('splitPatchSections: one section per file, binary data told apart from a data-less marker, prose before the first dropped (#385)', () => {
+	const binaryWithData = 'diff --git a/src/x.png b/src/x.png\nnew file mode 100644\nindex 0000000..1111111\nGIT binary patch\nliteral 8\nPcmeAS@N;KiWMT#Y3Bdt%\n\nliteral 0\nHcmV?d00001\n\n';
+	const text = `# two files are not in this patch\n${GITHUB_DIFF}${BINARY_DIFF}${binaryWithData}${ADD_DIFF}`;
+	const sections = splitPatchSections(text);
+	assert.deepStrictEqual(sections.map((s) => [s.path, s.from, s.isBinary, s.hasBinaryData]), [
+		['src/wp-includes/foo.php', 'src/wp-includes/foo.php', false, false],
+		['src/x.png', 'src/x.png', true, false],
+		['src/x.png', 'src/x.png', true, true],
+		['src/new.php', '', false, false]
+	]);
+	assert.strictEqual(sections.map((s) => s.text).join(''), text.slice(text.indexOf('diff --git')), 'the sections are the text, minus the prose');
+	// The app's own output has no diff --git line: a section starts at its ---.
+	const own = '===================================================================\n--- a/gone.php\t\n+++ /dev/null\t\n@@ -1,1 +0,0 @@\n-x\n===================================================================\n--- /dev/null\t\n+++ b/new.php\t\n@@ -0,0 +1,1 @@\n+y\n';
+	assert.deepStrictEqual(splitPatchSections(own).map((s) => [s.path, s.from]), [['gone.php', 'gone.php'], ['new.php', '']]);
+	// A rename names both ends.
+	assert.deepStrictEqual(splitPatchSections('diff --git a/src/old.php b/src/new.php\nsimilarity index 100%\nrename from src/old.php\nrename to src/new.php\n').map((s) => [s.path, s.from]), [['src/new.php', 'src/old.php']]);
 });

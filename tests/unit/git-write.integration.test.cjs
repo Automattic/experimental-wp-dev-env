@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { stagePaths, unstagePaths, writeTree, commitTree, updateBranch, createBranchAt, pointHeadAt, deleteBranch, checkoutBranch, fetchBranch, cleanUntracked } = require('../../src/git-write.cjs');
+const { stagePaths, unstagePaths, writeTree, commitTree, updateBranch, createBranchAt, pointHeadAt, deleteBranch, checkoutBranch, fetchBranch, cleanUntracked, applyPatch } = require('../../src/git-write.cjs');
 const { pathToFileURL } = require('node:url');
 const { git, tempDir } = require('./helpers/git.cjs');
 
@@ -168,4 +168,39 @@ test('fetchBranch brings one branch down from a file:// remote and answers with 
 	assert.equal(git(['tag', '--list'], dir).stdout, '', 'no tags came along');
 	assert.match(lines.join(''), /-> FETCH_HEAD/);
 	assert.equal(fs.readFileSync(path.join(dir, 'kept.txt'), 'utf8'), 'kept\n', 'a fetch touches no worktree');
+});
+
+test('applyPatch applies and reverses a patch against the worktree only, and a check that fails writes nothing', async (t) => {
+	const { dir } = makeRepo(t);
+	const patch = '--- a/kept.txt\n+++ b/kept.txt\n@@ -1 +1 @@\n-kept\n+patched\n';
+	const indexBefore = fs.statSync(path.join(dir, '.git', 'index')).mtimeMs;
+
+	assert.equal((await applyPatch(dir, patch, { check: true })).ok, true);
+	assert.equal(fs.readFileSync(path.join(dir, 'kept.txt'), 'utf8'), 'kept\n', 'a check writes nothing');
+	assert.equal((await applyPatch(dir, patch)).ok, true);
+	assert.equal(fs.readFileSync(path.join(dir, 'kept.txt'), 'utf8'), 'patched\n');
+	assert.equal(fs.statSync(path.join(dir, '.git', 'index')).mtimeMs, indexBefore, 'the index is not written');
+	assert.equal(git(['status', '--porcelain=v2'], dir).stdout.split(' ')[1], '.M', 'the change is unstaged');
+
+	const again = await applyPatch(dir, patch, { check: true });
+	assert.equal(again.ok, false, 'applied twice does not fit');
+	assert.equal(again.status, 1);
+	assert.match(again.stderr, /patch does not apply/);
+	assert.equal((await applyPatch(dir, patch, { reverse: true })).ok, true);
+	assert.equal(fs.readFileSync(path.join(dir, 'kept.txt'), 'utf8'), 'kept\n');
+
+	const outside = await applyPatch(dir, '--- /dev/null\n+++ b/../evil.txt\n@@ -0,0 +1 @@\n+evil\n', { check: true });
+	assert.equal(outside.ok, false);
+	assert.equal(outside.status, 128, 'a path outside the tree is refused outright');
+});
+
+test('applyPatch: an LF patch on a CRLF file is refused as is and fits under the Windows view (issue #341)', async (t) => {
+	const { dir } = makeRepo(t);
+	git(['config', '--unset', 'core.autocrlf'], dir);
+	fs.writeFileSync(path.join(dir, 'kept.txt'), 'kept\r\n');
+	const patch = '--- a/kept.txt\n+++ b/kept.txt\n@@ -1 +1 @@\n-kept\n+patched\n';
+
+	assert.equal((await applyPatch(dir, patch, { check: true, platform: 'darwin' })).ok, false);
+	assert.equal((await applyPatch(dir, patch, { platform: 'win32' })).ok, true);
+	assert.equal(fs.readFileSync(path.join(dir, 'kept.txt'), 'utf8'), 'patched\r\n', 'written back with the ending the file had');
 });
