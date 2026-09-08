@@ -260,3 +260,44 @@ test('discardChanges: stays on the ticket branch and keeps its parked work (issu
 	assert.strictEqual(fs.readFileSync(path.join(dir, 'text.txt'), 'utf8'), 'parked work\n');
 	assert.strictEqual(fs.existsSync(path.join(dir, 'untracked.txt')), false);
 });
+
+// What a discard must leave alone: the substrate `.gitignore` names and what
+// `.git/info/exclude` names (the app writes the latter for its own files).
+// `clean` without `-x` is the whole of that promise.
+test('discardChanges: ignored and excluded files survive, staged and untracked ones do not (issue #385)', async (t) => {
+	const dir = await makeRepo(t);
+	fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
+	await git.add({ fs, dir, filepath: '.gitignore' });
+	await git.commit({ fs, dir, message: 'ignore', author: AUTHOR });
+	fs.mkdirSync(path.join(dir, 'node_modules', 'dep'), { recursive: true });
+	fs.writeFileSync(path.join(dir, 'node_modules', 'dep', 'index.js'), 'installed\n');
+	fs.writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'excluded.txt\n');
+	fs.writeFileSync(path.join(dir, 'excluded.txt'), 'mine\n');
+	fs.mkdirSync(path.join(dir, 'new-dir'));
+	fs.writeFileSync(path.join(dir, 'new-dir', 'file.txt'), 'new\n');
+	fs.writeFileSync(path.join(dir, 'staged.txt'), 'staged\n');
+	await git.add({ fs, dir, filepath: 'staged.txt' });
+	fs.appendFileSync(path.join(dir, 'text.txt'), 'edit\n');
+	const children = [];
+
+	await discardChanges(dir, { onChild: (child) => children.push(child) });
+
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'node_modules', 'dep', 'index.js'), 'utf8'), 'installed\n');
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'excluded.txt'), 'utf8'), 'mine\n');
+	assert.strictEqual(fs.existsSync(path.join(dir, 'new-dir')), false);
+	assert.strictEqual(fs.existsSync(path.join(dir, 'staged.txt')), false);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'text.txt'), 'utf8'), 'line1\nline2\n');
+	assert.deepStrictEqual(await collectDirtyFiles(dir), []);
+	assert.strictEqual(children.length, 1, 'the checkout child was handed out');
+});
+
+test('discardToBase: a base this repository does not have does not rewind the branch (issue #385)', async (t) => {
+	const dir = await makeRepo(t);
+	const head = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+	fs.appendFileSync(path.join(dir, 'text.txt'), 'scribble\n');
+
+	await discardToBase(dir, '0000000000000000000000000000000000000001');
+
+	assert.strictEqual(await git.resolveRef({ fs, dir, ref: 'HEAD' }), head);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'text.txt'), 'utf8'), 'line1\nline2\n');
+});

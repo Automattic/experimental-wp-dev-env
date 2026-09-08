@@ -1095,10 +1095,10 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
  * was a new site rather than a migration. Same shape as `midSwitchBlock`, so
  * the handlers and the renderer treat both refusals alike. Delete, the patch
  * export and opening a pull request are deliberately not behind it: they are
- * how the work leaves, and none of them touches the checkout. Two writes
- * outside the checkout still reach such a site on purpose: `site:status`
- * keeps `.git/info/exclude` current, and the export's `ensureAutocrlf` may
- * write `core.autocrlf` on Windows until the patch flow moves (#385).
+ * how the work leaves, and none of them touches the checkout. One write
+ * outside the checkout still reaches such a site on purpose: `site:status`
+ * keeps `.git/info/exclude` current. (`ensureAutocrlf`, which the export
+ * still calls, is an in-memory view for isomorphic-git and writes nothing.)
  *
  * The export covers the branch that is checked out. Work parked on another
  * ticket's branch needs a switch to reach, and the switch is refused, so it
@@ -1372,9 +1372,9 @@ ipcMain.handle('git:discard-to-base', async (_e, sitePath) => {
         if (legacy) return legacy;
         const baseOid = await patchBaseOid(sitePath);
         if (baseOid) {
-            await discardToBase(sitePath, baseOid);
+            await discardToBase(sitePath, baseOid, { onChild: trackGitChild(sitePath) });
         } else {
-            await discardChanges(sitePath);
+            await discardChanges(sitePath, { onChild: trackGitChild(sitePath) });
         }
         await writeWorkMeta(sitePath, { appliedPatch: null });
         let files = null;
@@ -1391,7 +1391,7 @@ ipcMain.handle('git:discard-changes', async (_e, sitePath) => {
     try {
         const legacy = await legacySiteBlock(sitePath);
         if (legacy) return legacy;
-        await discardChanges(sitePath);
+        await discardChanges(sitePath, { onChild: trackGitChild(sitePath) });
         // Clearing the applied-patch record belongs with the reset that removed
         // the patch from the tree — not with the trunk update that may follow and
         // fail on the network, which would leave a revert banner for a patch that
@@ -1462,7 +1462,7 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
                 await mergeSiteMeta(sitePath, { currentBranch: TRUNK });
             }
 
-            const result = await updateToLatestTrunk({ dir: sitePath, url: WORDPRESS_GIT_URL, onLog: sendLog });
+            const result = await updateToLatestTrunk({ dir: sitePath, onLog: sendLog, onChild: trackGitChild(sitePath) });
             // An update resets the worktree, so any applied patch is gone with
             // it either way — clear the record so the "applied" banner does not
             // outlive the patch. (This is also where a discard's cleanup lands:

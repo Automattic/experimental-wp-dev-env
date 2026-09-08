@@ -4,7 +4,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
-const { spawnGit, runGit, GitError, subcommandOf, safeDirectoryArgs } = require('../../src/git-run.cjs');
+const { spawnGit, runGit, streamGit, GitError, subcommandOf, safeDirectoryArgs } = require('../../src/git-run.cjs');
 const { BASE_ARGS } = require('../../src/git-binary.cjs');
 
 // The runner's contract, checked without a Git: `spawn` is injected and hands
@@ -151,4 +151,57 @@ test('output past maxStdout rejects rather than growing without bound', async ()
 		(error) => error instanceof GitError && error.code === 'stdout-overflow'
 	);
 	assert.equal(calls.length, 1);
+});
+
+// streamGit: the runner behind the clone, the checkout and the fetch. The
+// scripted child's stderr is what Git prints for a human; both the raw chunks
+// and the parsed events must come out, once each, and the child itself must
+// be handed out before anything is read from it.
+test('streamGit forwards raw stderr and parsed progress, hands the child out, and resolves on exit 0', async () => {
+	const { spawn, calls } = recordingSpawn({
+		stderr: ['remote: Counting objects:  50% (1/2)\r', 'remote: Counting objects: 100% (2/2), done.\n', 'From file:///origin\n']
+	});
+	const chunks = [];
+	const events = [];
+	let child = null;
+
+	const result = await streamGit(['fetch', '--progress', 'origin', 'trunk'], {
+		cwd: '/sites/demo', spawn,
+		onStderr: (text) => chunks.push(text),
+		onProgress: (e) => events.push(e),
+		onChild: (c) => { child = c; }
+	});
+
+	assert.equal(child, calls[0].child);
+	assert.deepEqual(chunks.join(''), 'remote: Counting objects:  50% (1/2)\rremote: Counting objects: 100% (2/2), done.\nFrom file:///origin\n');
+	assert.deepEqual(events.map((e) => [e.phase, e.loaded, e.total]), [['counting objects', 1, 2], ['counting objects', 2, 2]]);
+	assert.equal(result.stderr, chunks.join(''));
+	assert.deepEqual(calls[0].options.stdio, ['ignore', 'pipe', 'pipe']);
+});
+
+test('streamGit rejects with the last fatal line, not the first line of a screen of progress', async () => {
+	const { spawn } = recordingSpawn({
+		status: 128,
+		stderr: ['Receiving objects:  10% (1/10)\r', 'error: RPC failed\n', 'fatal: early EOF\n']
+	});
+	await assert.rejects(
+		streamGit(['fetch', 'origin', 'trunk'], { cwd: '/sites/demo', spawn }),
+		(error) => {
+			assert.ok(error instanceof GitError);
+			assert.equal(error.code, 128);
+			assert.equal(error.message, 'git fetch failed (128): fatal: early EOF');
+			assert.match(error.stderr, /Receiving objects/);
+			assert.equal(error.cwd, '/sites/demo');
+			return true;
+		}
+	);
+});
+
+test('streamGit reports a Git that never started the way runGit does', async () => {
+	const enoent = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
+	const { spawn } = recordingSpawn({ error: enoent });
+	await assert.rejects(
+		streamGit(['clone', 'u', 'd'], { cwd: '/sites', spawn }),
+		(error) => error instanceof GitError && error.code === 'ENOENT' && /^git clone could not start/.test(error.message)
+	);
 });

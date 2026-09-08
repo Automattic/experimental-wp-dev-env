@@ -314,6 +314,24 @@ async function resolveRef(dir, ref) {
 }
 
 /**
+ * Whether `ancestor` is reachable from `descendant`: `merge-base
+ * --is-ancestor` answers with exit 0 or 1 and prints nothing. An oid Git
+ * does not have is a fatal (128) and rejects; the caller decides whether an
+ * unknown commit means "no".
+ *
+ * @param {string}   dir
+ * @param {string}   ancestor
+ * @param {string}   descendant
+ * @param {Object}   [options]
+ * @param {Function} [options.run]
+ * @return {Promise<boolean>}
+ */
+async function isAncestor(dir, ancestor, descendant, { run = runGit } = {}) {
+	const { status } = await run(['merge-base', '--is-ancestor', ancestor, descendant], { cwd: dir, okCodes: [0, 1] });
+	return status === 0;
+}
+
+/**
  * A commit's id and committer date, as the ISO string the app has always
  * stored. `%ct` is the epoch second, so the string is UTC regardless of the
  * committer's own offset, which is what `%cI` would have carried.
@@ -465,6 +483,7 @@ module.exports = {
 	windowsArgs,
 	isLegacySite,
 	resolveRef,
+	isAncestor,
 	readCommitInfo,
 	currentBranch,
 	listBranches,

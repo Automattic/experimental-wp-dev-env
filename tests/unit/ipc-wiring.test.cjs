@@ -564,7 +564,10 @@ test('git:discard-changes resets through trunk-update and clears the applied-pat
 	const main = loadMain({ stubs: { ...silentLogging(), ...settings.stubs, './trunk-update': { discardChanges } } });
 
 	assert.deepEqual(await main.invoke('git:discard-changes', '/sites/wp'), { ok: true });
-	assert.deepEqual(discardChanges.calls, [['/sites/wp']]);
+	assert.equal(discardChanges.calls.length, 1);
+	assert.equal(discardChanges.calls[0][0], '/sites/wp');
+	// The checkout child is tracked for the quit sweep, like every write (#385).
+	assert.equal(typeof discardChanges.calls[0][1].onChild, 'function');
 	// The record is cleared with the reset, not left for a later trunk update to
 	// clear — otherwise a failed update leaves a revert banner for a gone patch.
 	assert.equal(settings.values.siteMeta['/sites/wp'].appliedPatch, null);
@@ -754,7 +757,10 @@ test('git:update-trunk hands the update to trunk-update and streams its log back
 	const options = await started;
 
 	assert.equal(options.dir, '/sites/wp');
-	assert.equal(options.url, 'https://github.com/WordPress/wordpress-develop.git');
+	// No URL: the update fetches from the checkout's own origin (#359). The
+	// children it spawns are tracked for the quit sweep, like every write.
+	assert.equal('url' in options, false);
+	assert.equal(typeof options.onChild, 'function');
 
 	// The module reports progress by calling back, and the renderer only sees it
 	// if the handler forwards it under the id it just handed out.

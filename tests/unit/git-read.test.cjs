@@ -157,3 +157,12 @@ test('isLegacySite reads no config when the repository is not shallow (#385)', a
 	assert.equal(await read.isLegacySite(__dirname, { run }), false);
 	assert.deepEqual(seen, []);
 });
+
+test('isAncestor is one merge-base question, answered by the exit code (#385)', async () => {
+	const calls = [];
+	const run = async (args, options) => { calls.push({ args, options }); return { status: args.includes('yes') ? 0 : 1, stdout: Buffer.alloc(0), stderr: '' }; };
+	assert.equal(await read.isAncestor('/sites/wp', 'yes', 'head1', { run }), true);
+	assert.equal(await read.isAncestor('/sites/wp', 'no', 'head1', { run }), false);
+	assert.deepEqual(calls[0].args, ['merge-base', '--is-ancestor', 'yes', 'head1']);
+	assert.deepEqual(calls[0].options, { cwd: '/sites/wp', okCodes: [0, 1] });
+});
