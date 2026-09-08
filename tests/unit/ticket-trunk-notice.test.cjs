@@ -41,6 +41,11 @@ test('the ticket card renders the stale-ticket notice returned by status (#305)'
 	assert.match(source, /staleTicketNotice\.action/);
 	assert.match(source, /window\.api\.rebaseBranch\(sitePath\)/);
 	assert.match(source, /setTicketError\(rebaseRefusal\(/);
+	// The panel's feedback (the refusal among it) sits under the notice and
+	// the Unlink row, not at the foot of the card (#385 walkthrough).
+	const feedbackUnderNotice = source.indexOf('{ticketFeedback}\n\n            {tracInfo ? (');
+	assert.ok(feedbackUnderNotice > 0, 'ticketFeedback renders right after the stale notice');
+	assert.ok(source.indexOf('staleTicketNotice.action') < feedbackUnderNotice);
 	assert.match(
 		source,
 		/setTicketBehindTrunk\(false\);\s+setTracTicket\(res\.ticket\);/,

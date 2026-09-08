@@ -2694,6 +2694,24 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       </div>
     </div>
   ) : null;
+
+  // What the panel says back after an action: the refusal, the switch's
+  // progress line, the carried-work and saved-clean notices, and the
+  // dirty-trunk question. Rendered under the controls that cause them, the
+  // Unlink row and the trunk notice's button when a ticket is linked, the
+  // Link ticket field when none is, rather than at the foot of a card that
+  // can be a screen tall by the time the pull requests have loaded.
+  const ticketFeedback = (
+    <>
+      {ticketError ? (
+        <div role="alert" style={{ marginTop: 8, color: '#d63638', fontSize: 12 }}>{ticketError}</div>
+      ) : null}
+      {switchProgressLine}
+      {carriedNotice}
+      {savedCleanNotice}
+      {blockedPanel}
+    </>
+  );
   const renderBranchRows = (linked) => (
     <div style={{ marginTop: 8, border: '1px solid #ddd', borderRadius: 6, overflow: 'hidden' }}>
       {branchRows.map((row, i) => (
@@ -4601,6 +4619,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                 </div>
               </div>
             ) : null}
+            {ticketFeedback}
 
             {tracInfo ? (
               <div style={{ marginTop: 10 }}>
@@ -4826,13 +4845,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
             </div>
           </>
         )}
-        {ticketError ? (
-          <div role="alert" style={{ marginTop: 8, color: '#d63638', fontSize: 12 }}>{ticketError}</div>
-        ) : null}
-        {switchProgressLine}
-        {carriedNotice}
-        {savedCleanNotice}
-        {blockedPanel}
+        {tracTicket ? null : ticketFeedback}
         {tracTicket ? null : (
           <div style={{ marginTop: 8 }}>
             <Button variant="link" onClick={() => window.api.openExternal(TRAC_TICKET_LISTS_URL)} style={{ fontSize: 12 }}>
