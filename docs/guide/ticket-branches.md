@@ -91,9 +91,11 @@ Returning to a ticket does not make it clean or measure it from wherever trunk h
 
 Updating the site moves its copy of trunk, but deliberately does not move existing ticket branches. When the app can see that the linked ticket started on an older trunk, the **Trac ticket** card says:
 
-> **Trunk has moved since this ticket started.** Newer patches may not apply cleanly.
+> **Trunk has moved since this ticket started.** Newer patches may not apply cleanly. Move your work onto the current trunk here, or save a copy of it and start the ticket again.
 
-Nothing moves automatically. To start the ticket again from current trunk:
+Nothing moves on its own. The notice carries a button, **Update this ticket to the current trunk**, that replays the ticket's work onto the trunk the site now has: the same lines you changed, on top of the new code, in one step. Edits you have not parked yet come along. It is all or nothing: if trunk changed the same lines as your work, the app refuses, names the files, and moves nothing. The button waits while an update, an install, a build or the dev server is running, for the same reason the discard link does.
+
+When the move is refused, or when you would rather see the work land on fresh code yourself, the manual path is still there:
 
 1. Use **Review & submit changes** to save a patch of the ticket's work.
 2. Click **Unlink** so the ticket appears under **Your tickets on this site**.
@@ -101,13 +103,13 @@ Nothing moves automatically. To start the ticket again from current trunk:
 4. Link the same ticket again. Its new branch starts from current trunk.
 5. Apply the saved patch and check that the work still fits.
 
-The app stays silent when it cannot identify a ticket's original base; it does not substitute the current trunk and pretend the ticket is current.
+The app stays silent when it cannot identify a ticket's original base; it does not substitute the current trunk and pretend the ticket is current, and the button is not offered.
 
 ## What a patch contains
 
 A patch is everything on the ticket's branch since the point it was created — only that ticket's work, never another's, and never a change that arrived from a trunk update.
 
-That last point has a consequence worth knowing. A ticket branch keeps the snapshot of trunk it was born on, even after you [update the site to the latest trunk](./trunk-updates). The patch stays correct against that snapshot, which is what keeps it free of upstream changes you did not write — but a branch you started weeks ago produces a patch that may no longer apply to today's trunk. Use the copy-and-restart path above when you need a fresh base; the app does not replay the branch onto it silently.
+That last point has a consequence worth knowing. A ticket branch keeps the snapshot of trunk it was born on, even after you [update the site to the latest trunk](./trunk-updates). The patch stays correct against that snapshot, which is what keeps it free of upstream changes you did not write — but a branch you started weeks ago produces a patch that may no longer apply to today's trunk. Use **Update this ticket to the current trunk** when you need a fresh base, or the copy-and-restart path above; the app does not replay the branch onto it silently.
 
 ## Next steps
 

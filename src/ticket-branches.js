@@ -29,7 +29,7 @@
  */
 
 const { mapCheckoutPhase } = require('./switch-progress.cjs');
-const { currentBranch, listBranches, resolveRef, statusRows, changesAgainst } = require('./git-read.cjs');
+const { currentBranch, listBranches, resolveRef, statusRows, changesAgainst, mergeTree } = require('./git-read.cjs');
 const { stagePaths, writeTree, commitTree, updateBranch, createBranchAt, pointHeadAt, deleteBranch, checkoutBranch } = require('./git-write.cjs');
 
 /** The pristine snapshot branch. Never committed to, never deleted. */
@@ -393,6 +393,94 @@ async function resumeSwitch(dir, ref, { onProgress = null, onChild = null } = {}
 }
 
 /**
+ * Moves a ticket's work onto the current trunk (#385): the one-click form of
+ * "save a patch, unlink, delete the branch, link again, apply the patch".
+ *
+ * The branch holds exactly one WIP commit whose parent is `baseOid`, so the
+ * move is one three-way merge of that commit's tree onto trunk from the base
+ * (`mergeTree`), a new WIP commit with trunk as its parent, and the ref
+ * moved onto it. Invariant 2 holds afterwards: still one commit, still
+ * parented on the branch's base, which is now trunk's tip; the caller records
+ * that base. All or nothing, like a patch: a conflict is a refusal that names
+ * the paths, with nothing written but unreachable objects.
+ *
+ * If the branch is checked out, loose edits are its work too and are parked
+ * into the WIP first, the way a switch parks them; the forced checkout at
+ * the end then makes the worktree the rebased tree. A branch that is not
+ * checked out is parked already and its files are not on disk.
+ *
+ * @param {string}   dir
+ * @param {string}   ref
+ * @param {Object}   root0
+ * @param {string}   root0.baseOid      the branch's recorded base
+ * @param {Object}   [root0.author]
+ * @param {Function} [root0.onProgress] the park's stages, then `rebase`, then the checkout's
+ * @param {Function} [root0.onChild]    handed the checkout's ChildProcess
+ * @return {Promise<{rebased: boolean, from: string, to: string, parked: boolean, oid: ?string}>}
+ */
+async function rebaseOntoTrunk(dir, ref, { baseOid, author = WIP_AUTHOR, onProgress = null, onChild = null } = {}) {
+	if (!baseOid) {
+		const error = new Error('This ticket has no recorded starting point');
+		error.code = 'no-base';
+		throw error;
+	}
+	const trunkTip = await trunkOid(dir);
+	if (trunkTip === baseOid) return { rebased: false, from: baseOid, to: trunkTip, parked: false, oid: null };
+
+	const report = onProgress ? (p) => onProgress({ to: ref, ...p }) : null;
+	const active = (await currentBranchName(dir)) === ref;
+	let parked = false;
+	if (active) ({ parked } = await parkCurrentWork(dir, { baseOid, author, onProgress: report }));
+
+	const wip = await resolveRef(dir, ref);
+	if (!wip) {
+		const error = new Error(`No such branch: ${ref}`);
+		error.code = 'no-such-branch';
+		throw error;
+	}
+	if (report) report({ stage: 'rebase', from: ref });
+	let oid;
+	if (wip === baseOid) {
+		// A ticket with no work yet: nothing to replay, the branch just starts
+		// from the new trunk.
+		oid = trunkTip;
+	} else {
+		const { tree, conflicts } = await mergeTree(dir, { base: baseOid, ours: trunkTip, theirs: wip });
+		if (conflicts.length) {
+			const error = new Error(`Trunk changed the same lines as this ticket's work in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}`);
+			error.code = 'rebase-conflict';
+			error.conflicts = conflicts;
+			throw error;
+		}
+		oid = await commitTree(dir, { tree, parent: trunkTip, message: WIP_MESSAGE, author });
+	}
+	// `expected` is the tip read above: a second writer moving the branch in
+	// the meantime fails here rather than being overwritten.
+	await updateBranch(dir, ref, oid, { expected: wip });
+
+	if (active) {
+		// The tree on disk is the old WIP's; the forced checkout makes it the
+		// new one. Tagged the way a switch tags it, so a failure here leaves
+		// the caller's marker and `resumeSwitch(ref)` is the retry.
+		try {
+			await checkoutBranch(dir, ref, {
+				...(report ? { onProgress: (p) => report(mapCheckoutPhase(p)) } : {}),
+				...(onChild ? { onChild } : {})
+			});
+		} catch (e) {
+			if (e && typeof e === 'object') {
+				e.stage = 'checkout';
+				e.from = ref;
+				e.to = ref;
+			}
+			throw e;
+		}
+	}
+	if (report) report({ stage: 'done', from: ref });
+	return { rebased: true, from: baseOid, to: trunkTip, parked, oid };
+}
+
+/**
  * Deletes a ticket branch and everything committed on it — the "delete this
  * ticket's work" action, which under this model is a branch deletion and not a
  * site reset (#108).
@@ -447,5 +535,6 @@ module.exports = {
 	startTicketBranch,
 	switchToBranch,
 	resumeSwitch,
+	rebaseOntoTrunk,
 	deleteTicketBranch
 };

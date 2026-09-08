@@ -3259,6 +3259,92 @@ test('a detector that fails leaves the site usable rather than flagged (#385)', 
 	assert.equal(status.trunkOid, 'x', 'the rest of the status is still answered');
 });
 
+// --- branches:rebase — the notice's own button (#385) -----------------------
+
+function rebaseFixture({ baseOid = 'old', extraMeta = {} } = {}) {
+	return fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: {
+			'/sites/wp': {
+				tracTicket: 61002,
+				currentBranch: 'ticket/61002',
+				branches: { 'ticket/61002': { tracTicket: 61002, baseOid, appliedPatch: { label: 'A.diff', text: 'x', files: ['f'] } } },
+				...extraMeta
+			}
+		}
+	});
+}
+
+test('branches:rebase moves the active ticket onto trunk, records the new base and drops the applied-patch record (#385)', async () => {
+	const rebaseOntoTrunk = spy(async () => ({ rebased: true, from: 'old', to: 'new', parked: true, oid: 'wip2' }));
+	const settings = rebaseFixture();
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => 'ticket/61002' }
+		}
+	});
+	const event = createIpcEvent();
+
+	const result = await main.invokeWith('branches:rebase', event, '/sites/wp');
+
+	assert.deepEqual(result, { ok: true, ticket: 61002, from: 'old', to: 'new', rebased: true, parked: true });
+	assert.equal(rebaseOntoTrunk.calls[0][1], 'ticket/61002');
+	assert.equal(rebaseOntoTrunk.calls[0][2].baseOid, 'old');
+	assert.equal(typeof rebaseOntoTrunk.calls[0][2].onChild, 'function', 'the checkout child is tracked for the quit sweep');
+	const branch = settings.values.siteMeta['/sites/wp'].branches['ticket/61002'];
+	assert.equal(branch.baseOid, 'new');
+	assert.equal(branch.appliedPatch, null, 'a rewritten tree cannot vouch for a patch applied to the old one');
+	assert.equal(settings.values.siteMeta['/sites/wp'].switchInProgress, null);
+	// And the notice's own question answers "current" now.
+	const status = await main.invoke('site:status', '/sites/wp');
+	assert.equal(status.ticketBehindTrunk, false);
+});
+
+test('branches:rebase refuses on trunk, without a recorded base, on a legacy site and under a mid-switch marker (#385)', async () => {
+	const rebaseOntoTrunk = spy(async () => ({ rebased: true, from: 'old', to: 'new', parked: false }));
+	const cases = [
+		[fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': { branches: {} } } }), 'trunk', {}, 'on-trunk'],
+		[rebaseFixture({ baseOid: null }), 'ticket/61002', {}, 'no-base'],
+		[rebaseFixture(), 'ticket/61002', { './git-read.cjs': { isLegacySite: async () => true } }, 'legacy-site'],
+		[rebaseFixture({ extraMeta: { switchInProgress: { from: 'trunk', to: 'ticket/61002' } } }), 'ticket/61002', {}, 'switch-incomplete']
+	];
+	for (const [settings, branch, extra, code] of cases) {
+		const main = loadMain({
+			stubs: { ...silentLogging(), ...settings.stubs, ...extra, './ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => branch } }
+		});
+		const result = await main.invoke('branches:rebase', '/sites/wp');
+		assert.equal(result.ok, false, code);
+		assert.equal(result.code, code);
+	}
+	assert.deepEqual(rebaseOntoTrunk.calls, [], 'nothing was attempted');
+});
+
+test('branches:rebase hands a conflict back with the paths, and the base stays where it was (#385)', async () => {
+	const rebaseOntoTrunk = spy(async () => {
+		const error = new Error('Trunk changed the same lines');
+		error.code = 'rebase-conflict';
+		error.conflicts = ['src/wp-login.php'];
+		throw error;
+	});
+	const settings = rebaseFixture();
+	const main = loadMain({
+		stubs: { ...silentLogging(), ...settings.stubs, './ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => 'ticket/61002' } }
+	});
+
+	const result = await main.invoke('branches:rebase', '/sites/wp');
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'rebase-conflict');
+	assert.deepEqual(result.conflicts, ['src/wp-login.php']);
+	const branch = settings.values.siteMeta['/sites/wp'].branches['ticket/61002'];
+	assert.equal(branch.baseOid, 'old');
+	assert.equal(branch.appliedPatch.label, 'A.diff', 'nothing moved, so nothing is forgotten');
+	assert.equal(settings.values.siteMeta['/sites/wp'].switchInProgress, undefined, 'a refusal before any checkout leaves no marker');
+});
+
 test('a site that cannot be migrated is retried, not stranded on the old shape (issue #108)', async () => {
 	const startTicketBranch = spy(async () => { throw new Error('not a repository'); });
 	const listTicketBranches = spy(async () => { throw new Error('not a repository'); });
@@ -4351,6 +4437,7 @@ const WIRED = new Set([
 	'sites:set-ticket',
 	'branches:list',
 	'branches:switch',
+	'branches:rebase',
 	'branches:delete',
 	'git:preview-patch',
 	'git:apply-patch',
