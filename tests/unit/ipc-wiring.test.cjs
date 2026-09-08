@@ -3296,11 +3296,44 @@ test('branches:rebase moves the active ticket onto trunk, records the new base a
 	assert.equal(typeof rebaseOntoTrunk.calls[0][2].onChild, 'function', 'the checkout child is tracked for the quit sweep');
 	const branch = settings.values.siteMeta['/sites/wp'].branches['ticket/61002'];
 	assert.equal(branch.baseOid, 'new');
-	assert.equal(branch.appliedPatch, null, 'a rewritten tree cannot vouch for a patch applied to the old one');
+	// The patch is still in the work, so the record and the #328 guard stay;
+	// only the revert text, written against the old trunk, is dropped.
+	assert.deepEqual(branch.appliedPatch, { label: 'A.diff', text: null, files: ['f'] });
 	assert.equal(settings.values.siteMeta['/sites/wp'].switchInProgress, null);
 	// And the notice's own question answers "current" now.
 	const status = await main.invoke('site:status', '/sites/wp');
 	assert.equal(status.ticketBehindTrunk, false);
+});
+
+// The ref moves before the checkout. When only the checkout fails, the base
+// has to follow the ref at once: every patch reads `baseOid`, and none of
+// those readers is behind the marker.
+test('branches:rebase records the new base even when the checkout after the ref move fails (#385)', async () => {
+	const rebaseOntoTrunk = spy(async () => {
+		const error = new Error('index.lock');
+		error.stage = 'checkout';
+		error.from = 'ticket/61002';
+		error.to = 'ticket/61002';
+		error.movedTo = 'new';
+		throw error;
+	});
+	const settings = rebaseFixture();
+	const main = loadMain({
+		stubs: { ...silentLogging(), ...settings.stubs, './ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => 'ticket/61002' } }
+	});
+
+	const result = await main.invoke('branches:rebase', '/sites/wp');
+
+	assert.equal(result.ok, false);
+	const site = settings.values.siteMeta['/sites/wp'];
+	assert.equal(site.branches['ticket/61002'].baseOid, 'new', 'the base follows the ref');
+	assert.deepEqual(site.switchInProgress, { from: 'ticket/61002', to: 'ticket/61002' }, 'and the marker says the swap is unfinished');
+	assert.equal(site.branches['ticket/61002'].appliedPatch.text, 'x', 'the record is untouched until the move completes');
+	// The marker's sentence names the exit the card has for this shape.
+	const again = await main.invoke('branches:rebase', '/sites/wp');
+	assert.equal(again.code, 'switch-incomplete');
+	assert.match(again.error, /Unlink the ticket and continue it/);
+	assert.doesNotMatch(again.error, /from ticket\/61002 to ticket\/61002/);
 });
 
 test('branches:rebase refuses on trunk, without a recorded base, on a legacy site and under a mid-switch marker (#385)', async () => {

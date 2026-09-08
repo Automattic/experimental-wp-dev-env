@@ -674,7 +674,7 @@ test('rebaseOntoTrunk tags a checkout that fails with the stage, the ref already
 	await switchToBranch(dir, ref, { baseOid });
 	fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
 
-	await assert.rejects(rebaseOntoTrunk(dir, ref, { baseOid }), (e) => e.stage === 'checkout' && e.from === ref && e.to === ref);
+	await assert.rejects(rebaseOntoTrunk(dir, ref, { baseOid }), (e) => e.stage === 'checkout' && e.from === ref && e.to === ref && e.movedTo === newTrunk);
 
 	assert.deepEqual((await wipOf(dir, ref)).parents, [newTrunk], 'the branch is on the new trunk');
 	assert.equal(read(dir, 'doomed.php'), '<?php // to be deleted\n', 'the tree is still the old one');

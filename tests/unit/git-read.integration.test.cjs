@@ -167,6 +167,7 @@ test('mergeTree merges two sides from a base without touching the index or the w
 	const indexBefore = fs.statSync(path.join(dir, '.git', 'index')).mtimeMs;
 
 	const clean = await read.mergeTree(dir, { base, ours, theirs });
+	assert.equal(clean.conflicted, false);
 	assert.deepEqual(clean.conflicts, []);
 	assert.equal(git(['show', `${clean.tree}:src/wp-login.php`], dir).stdout, '<?php // login\n// theirs');
 	assert.equal(git(['show', `${clean.tree}:with space.txt`], dir).stdout, 'ours');
@@ -180,6 +181,7 @@ test('mergeTree merges two sides from a base without touching the index or the w
 	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // login\n// ours too\n');
 	const clash = commit('clash');
 	const conflicted = await read.mergeTree(dir, { base, ours: clash, theirs });
+	assert.equal(conflicted.conflicted, true);
 	assert.deepEqual(conflicted.conflicts, ['src/wp-login.php']);
 	assert.match(conflicted.tree, /^[0-9a-f]{40}$/, 'a tree is still written, with markers, for whoever wants it');
 	await assert.rejects(read.mergeTree(dir, { base, ours: '0000000000000000000000000000000000000001', theirs }), (e) => e.code === 128);

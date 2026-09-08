@@ -445,9 +445,11 @@ async function rebaseOntoTrunk(dir, ref, { baseOid, author = WIP_AUTHOR, onProgr
 		// from the new trunk.
 		oid = trunkTip;
 	} else {
-		const { tree, conflicts } = await mergeTree(dir, { base: baseOid, ours: trunkTip, theirs: wip });
-		if (conflicts.length) {
-			const error = new Error(`Trunk changed the same lines as this ticket's work in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}`);
+		const { tree, conflicted, conflicts } = await mergeTree(dir, { base: baseOid, ours: trunkTip, theirs: wip });
+		if (conflicted) {
+			const error = new Error(conflicts.length
+				? `Trunk changed the same lines as this ticket's work in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}`
+				: 'Trunk changed the same lines as this ticket\'s work');
 			error.code = 'rebase-conflict';
 			error.conflicts = conflicts;
 			throw error;
@@ -472,6 +474,10 @@ async function rebaseOntoTrunk(dir, ref, { baseOid, author = WIP_AUTHOR, onProgr
 				e.stage = 'checkout';
 				e.from = ref;
 				e.to = ref;
+				// The ref is on the new trunk whatever the tree looks like; the
+				// caller records that base now, or every patch until the
+				// retry would be measured from the old one.
+				e.movedTo = trunkTip;
 			}
 			throw e;
 		}

@@ -388,12 +388,18 @@ async function isAncestor(dir, ancestor, descendant, { run = runGit } = {}) {
  * @param {string}   root0.theirs
  * @param {Object}   [options]
  * @param {Function} [options.run]
- * @return {Promise<{tree: string, conflicts: string[]}>}
+ * @return {Promise<{tree: string, conflicted: boolean, conflicts: string[]}>}
  */
 async function mergeTree(dir, { base, ours, theirs }, { run = runGit } = {}) {
-	const { status, stdout } = await run(['merge-tree', '--write-tree', '-z', '--name-only', `--merge-base=${base}`, ours, theirs], { cwd: dir, okCodes: [0, 1] });
+	// No lazy fetch: on a partial clone a blob none of the three sides has
+	// checked out would be pulled from the promisor mid-merge, with no
+	// timeout to bound it. Refusing with Git's reason beats waiting on a
+	// network the contributor may not have.
+	const { status, stdout } = await run(['merge-tree', '--write-tree', '-z', '--name-only', `--merge-base=${base}`, ours, theirs], { cwd: dir, okCodes: [0, 1], extraEnv: { GIT_NO_LAZY_FETCH: '1' } });
 	const parsed = parseMergeTreeZ(stdout);
-	return { tree: parsed.tree, conflicts: status === 1 ? parsed.conflicts : [] };
+	// The exit code is the answer; the paths are the detail. A conflict Git
+	// reports in a shape the parser does not read is still a conflict.
+	return { tree: parsed.tree, conflicted: status === 1, conflicts: status === 1 ? parsed.conflicts : [] };
 }
 
 /**
