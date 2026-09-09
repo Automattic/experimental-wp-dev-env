@@ -8,13 +8,13 @@
  * what changed. That parity is why the EOL handling here mirrors the patch
  * builder's instead of trusting the bytes on disk:
  *
- * A Windows checkout sits on disk as CRLF (`ensureAutocrlf` sets
- * core.autocrlf=true, and native-git checkouts arrive that way). Upstream's
- * blobs are LF-only. Uploading raw workdir bytes would publish a pull request
- * where every line of an edited file is rewritten — and worse, the non-UTF-8
- * files that statusMatrix's autocrlf handling misses (wordpress-develop's
- * encoding fixtures; see isCrlfOnlyChange in trunk-update.js) would appear as
- * changed files the contributor never touched. So text content is normalised
+ * A Windows checkout a host Git made sits on disk as CRLF (the reads see it
+ * through the `core.autocrlf` view `crlfArgs` in git-read.cjs supplies).
+ * Upstream's blobs are LF-only. Uploading raw workdir bytes would publish a
+ * pull request where every line of an edited file is rewritten — and worse,
+ * the non-UTF-8 files that view misses (wordpress-develop's encoding
+ * fixtures; see isCrlfOnlyChange in trunk-update.js) would appear as changed
+ * files the contributor never touched. So text content is normalised
  * to LF before upload, and a file whose only difference is line endings is
  * not a change at all. Binary content — anything with a NUL byte on either
  * side — is carried byte-for-byte, which is the one thing the `.diff` cannot

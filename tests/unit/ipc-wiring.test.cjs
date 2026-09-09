@@ -838,19 +838,20 @@ test('git:update-trunk keeps the applied-patch record when the fetch fails', asy
 	assert.equal(settings.values.siteMeta['/sites/wp'].appliedPatch.text, 'STORED');
 });
 
-test('sites:add normalizes line endings before adopting a directory', async () => {
-	// Throwing ends the handler at its first delegation, which is the only thing
-	// under test — and it has to end there. The next line is a store write, and
-	// this test hands the harness no settings store, so reaching it would start
-	// the real `import('electron-store')`, whose own `import {app} from 'electron'`
-	// loads the real electron package through the ESM loader, out of reach of the
-	// hook. See the guard test below for why that must not happen.
-	const ensureAutocrlf = spy(async () => { throw new Error('not a repository'); });
-	const main = loadMain({ stubs: { ...silentLogging(), './trunk-update': { ensureAutocrlf } } });
+test('sites:add seeds the local excludes and registers the directory, writing no Git config', async (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-add-'));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const settings = fakeSettingsStore({ sites: [], siteMeta: {} });
+	const main = loadMain({ stubs: { ...silentLogging(), ...settings.stubs } });
 
-	await main.invoke('sites:add', '/sites/wp').catch(() => {});
+	const sites = await main.invoke('sites:add', dir);
 
-	assert.deepEqual(ensureAutocrlf.calls, [['/sites/wp']]);
+	assert.deepEqual(sites, [dir]);
+	assert.match(fs.readFileSync(path.join(dir, '.git', 'info', 'exclude'), 'utf8'), /\.claude/);
+	// A checkout a host Git made is adopted as it is: the CRLF view the reads
+	// and writes carry on Windows is per command, never written to the repo.
+	assert.doesNotMatch(fs.readFileSync(path.join(dir, '.git', 'config'), 'utf8'), /autocrlf/);
 });
 
 // --- git:get-patch -> src/trunk-update.js + src/git-update.cjs -----------
@@ -871,12 +872,10 @@ test('git:get-patch normalizes both sides of the diff through git-update', async
 
 	const real = require('../../src/git-update.cjs');
 	const normalizeEol = spy(real.normalizeEol);
-	const ensureAutocrlf = spy(async () => {});
 	const main = loadMain({
 		stubs: {
 			...silentLogging(),
-			'./git-update.cjs': { normalizeEol },
-			'./trunk-update': { ensureAutocrlf }
+			'./git-update.cjs': { normalizeEol }
 		}
 	});
 
@@ -888,7 +887,6 @@ test('git:get-patch normalizes both sides of the diff through git-update', async
 	// both sides have to go through the module — the committed blob and what is
 	// on disk now.
 	assert.equal(normalizeEol.calls.length, 2);
-	assert.deepEqual(ensureAutocrlf.calls, [[dir]]);
 });
 
 // The `git.add` loop that used to stage every untracked file before diffing was
@@ -909,7 +907,7 @@ test('git:get-patch includes an untracked file without staging it (issues #108, 
 	fs.mkdirSync(path.join(dir, 'node_modules'));
 	fs.writeFileSync(path.join(dir, 'node_modules', 'junk.js'), 'noise\n');
 
-	const main = loadMain({ stubs: { ...silentLogging(), './trunk-update': { ensureAutocrlf: async () => {} } } });
+	const main = loadMain({ stubs: { ...silentLogging() } });
 	const before = await git.statusMatrix({ fs, dir });
 	const result = await main.invoke('git:get-patch', dir);
 
@@ -952,8 +950,7 @@ test('git:get-patch excludes local coding-agent directories from a managed site 
 	const main = loadMain({
 		stubs: {
 			...silentLogging(),
-			...fakeSettingsStore({ sites: [dir], siteMeta: { [dir]: {} } }).stubs,
-			'./trunk-update': { ensureAutocrlf: async () => {} }
+			...fakeSettingsStore({ sites: [dir], siteMeta: { [dir]: {} } }).stubs
 		}
 	});
 	await main.invoke('site:status', dir);
@@ -985,10 +982,16 @@ test('git:get-patch excludes local coding-agent directories from a managed site 
 
 // A repository with a committed base, for the generation tests below. Returns
 // the directory; callers mutate the worktree and then invoke the handler.
+// Shaped like a site the app cloned (git-clone.cjs): `core.autocrlf=false`
+// keeps the tree LF on Windows too. Without it these repositories look like
+// checkouts a host Git made, and on Windows the reads and `git apply` carry
+// the CRLF view for those (crlfArgs), so a byte-for-byte assertion on what a
+// generated patch wrote would see CRLF where the patch said LF.
 async function patchRepo(t, files) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-patch-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	for (const [name, content] of Object.entries(files)) {
 		fs.writeFileSync(path.join(dir, name), content);
 	}
@@ -998,7 +1001,7 @@ async function patchRepo(t, files) {
 }
 
 function patchMain() {
-	return loadMain({ stubs: { ...silentLogging(), './trunk-update': { ensureAutocrlf: async () => {} } } });
+	return loadMain({ stubs: { ...silentLogging() } });
 }
 
 // The patch is what a contributor hands over, so a change it does not mention
@@ -1120,6 +1123,43 @@ test('a generated patch applies when the files have no trailing newline (#85)', 
 	assert.equal(applied.ok, true, applied.error);
 	assert.equal(fs.existsSync(path.join(target, 'gone.php')), false);
 	assert.equal(fs.readFileSync(path.join(target, 'edited.php'), 'utf8'), 'line1\nline2\nline3');
+});
+
+// The patch a contributor hands over is applied by whoever receives it with
+// `git apply`, so the app's own output has to pass the same tool it now uses
+// to apply patches (#385): every shape the generator emits, checked by the
+// bundled Git against a second checkout of the same base.
+test('a generated patch is accepted by git apply --check, every shape the generator emits (#85, #385)', async (t) => {
+	const { git: bin } = require('./helpers/git.cjs');
+	const base = {
+		'gone.php': '<?php // removed\n',
+		'edited.php': 'line1\nline2\n',
+		'noeol.php': 'one\ntwo',
+		'empty-gone.php': '',
+		'image.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])
+	};
+	const source = await patchRepo(t, base);
+	fs.rmSync(path.join(source, 'gone.php'));
+	fs.rmSync(path.join(source, 'empty-gone.php'));
+	fs.writeFileSync(path.join(source, 'edited.php'), 'line1\nline2\nline3\n');
+	fs.writeFileSync(path.join(source, 'noeol.php'), 'one\ntwo\nthree');
+	fs.writeFileSync(path.join(source, 'added.php'), '<?php // new\n');
+	fs.writeFileSync(path.join(source, 'empty-added.php'), '');
+	fs.writeFileSync(path.join(source, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]));
+	const { patch } = await patchMain().invoke('git:get-patch', source);
+
+	const target = await patchRepo(t, base);
+	const file = path.join(target, '..', `${path.basename(target)}.diff`);
+	t.after(() => fs.rmSync(file, { force: true }));
+	fs.writeFileSync(file, patch);
+	const check = bin(['apply', '--check', '-p1', file], target);
+	assert.equal(check.status, 0, check.stderr);
+	assert.match(patch, /image\.png/, 'the binary file is named above the patch');
+	assert.equal(bin(['apply', '-p1', file], target).status, 0);
+	assert.equal(fs.readFileSync(path.join(target, 'noeol.php'), 'utf8'), 'one\ntwo\nthree');
+	assert.equal(fs.existsSync(path.join(target, 'gone.php')), false);
+	assert.equal(fs.existsSync(path.join(target, 'empty-gone.php')), false);
+	assert.equal(fs.readFileSync(path.join(target, 'empty-added.php'), 'utf8'), '');
 });
 
 // --- empty files added and deleted (#311) ---------------------------------
@@ -1277,15 +1317,14 @@ test('a tree whose only change is binary still reports no changes (#85)', async 
 test('git:create-patch and git:save-patch generate the patch the same way', async (t) => {
 	const dir = await fixtureRepo(t);
 	for (const channel of ['git:create-patch', 'git:save-patch']) {
-		// Throwing ends the handler at its first delegation — which is also what
-		// keeps this test off the network, since the next step fetches
-		// wordpress-develop when the repository has no origin/trunk.
-		const ensureAutocrlf = spy(async () => { throw new Error('not a repository'); });
-		const main = loadMain({ stubs: { ...silentLogging(), './trunk-update': { ensureAutocrlf } } });
+		// Throwing ends the handler at its first read, the base the walk
+		// compares against — the same one for both channels.
+		const resolveRef = spy(async () => { throw new Error('not a repository'); });
+		const main = loadMain({ stubs: { ...silentLogging(), './git-read.cjs': { resolveRef } } });
 
 		await main.invoke(channel, dir);
 
-		assert.deepEqual(ensureAutocrlf.calls, [[dir]], channel);
+		assert.deepEqual(resolveRef.calls[0], [dir, 'HEAD'], channel);
 	}
 });
 
@@ -2792,7 +2831,7 @@ test('the trunk update reports its switches in its own log, not on the switch ch
 			...silentLogging(),
 			...settings.stubs,
 			'./ticket-branches': { switchToBranch, currentBranchName },
-			'./trunk-update': { updateToLatestTrunk, ensureAutocrlf: async () => {}, readTrunkInfo: async () => ({}) }
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({}) }
 		}
 	});
 

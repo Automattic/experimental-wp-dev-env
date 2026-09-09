@@ -18,10 +18,12 @@ Nothing is changed yet. The panel first shows what the patch would do:
 
 - The list of files it changes.
 - A warning if this ticket already has work in any of those files, measured from the trunk snapshot the ticket started on. The warning names your own edits and changes from an applied patch separately; a file from an applied patch may contain your edits too. The new patch is applied on top of that work: it succeeds if the changes do not overlap, and fails without touching anything if they do. Save a patch of your work first if you want a copy — see [Submitting your changes](submitting-changes).
-- Which files are binary and will be skipped.
+- Which files are binary and will be skipped: a patch that carries a binary file's data (one made with `git diff --binary`) applies it; one that only says the file differs cannot, and the preview names it.
 - Whether it changes `package-lock.json`, in which case dependencies will be installed before the rebuild.
 
 Click **Apply and rebuild** to go ahead, or **Cancel** to back out.
+
+The apply itself is Git's own `git apply`, the same command whoever receives your patch will run, so "does it fit" means the same thing on both ends. It is all or nothing: when any part of the patch does not fit, nothing is written, and the panel says which files and, inside each, which regions. Files the patch adds stay unstaged, as they always did.
 
 ## Apply and rebuild
 

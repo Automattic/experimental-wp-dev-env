@@ -256,7 +256,7 @@ function parseMergeTreeZ(buf) {
 }
 
 /**
- * The Windows-only view createCrlfCompatibleFs gives isomorphic-git, for the
+ * The Windows-only `core.autocrlf` view, one `-c` per command, for the
  * binary: a site checked out by a host Git with a global `autocrlf = true`
  * sits on disk as CRLF, its repository config says nothing, and the app's Git
  * reads no global config (git-binary.cjs). Without this, `status` reports

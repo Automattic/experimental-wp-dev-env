@@ -14,7 +14,8 @@ const {
 	checkoutBranch,
 	fetchBranch,
 	unstagePaths,
-	cleanUntracked
+	cleanUntracked,
+	applyPatch
 } = require('../../src/git-write.cjs');
 
 // The argument lists, without a Git: `run` and `spawn` are injected and record
@@ -255,4 +256,32 @@ test('cleanUntracked removes untracked files and directories but never what is i
 	for (const { args } of calls.filter((c) => c.args[0] !== 'config')) {
 		assert.deepEqual(args.slice(0, 4), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true'], args.join(' '));
 	}
+});
+
+test('applyPatch hands the patch to Git on stdin with -p1, checks or reverses on request, and carries the Windows view', async () => {
+	const { run, calls } = recordingRun();
+	const patch = '--- a/src/wp-login.php\n+++ b/src/wp-login.php\n@@ -1 +1 @@\n-a\n+b\n';
+
+	const applied = await applyPatch('/sites/wp', patch, { platform: 'darwin', run });
+	assert.deepEqual(applied, { ok: true, status: 0, stderr: '' });
+	assert.deepEqual(calls[0].args, ['apply', '--whitespace=nowarn', '-p1', '-']);
+	assert.equal(calls[0].options.cwd, '/sites/wp');
+	assert.equal(calls[0].options.input.toString('utf8'), patch);
+	assert.deepEqual(calls[0].options.okCodes, [0, 1, 128], 'exit 1 and 128 are answers, not throws');
+	assert.ok(!calls[0].args.includes('--index') && !calls[0].args.includes('--3way'), 'the index is never touched');
+
+	await applyPatch('/sites/wp', patch, { check: true, reverse: true, platform: 'darwin', run });
+	assert.deepEqual(calls[1].args, ['apply', '--whitespace=nowarn', '-p1', '--check', '--reverse', '-']);
+
+	calls.length = 0;
+	await applyPatch('C:\\Sites\\wp', patch, { platform: 'win32', run });
+	const apply = calls.find((c) => c.args.includes('apply'));
+	assert.deepEqual(apply.args.slice(0, 4), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true']);
+});
+
+test('applyPatch reports a patch that does not fit, or that Git refuses, as not ok with the stderr kept', async () => {
+	const answers = [{ status: 1, stderr: 'error: patch failed: a.php:1\n' }, { status: 128, stderr: "error: invalid path '../x'\n" }];
+	const run = async () => ({ ...answers.shift(), stdout: Buffer.alloc(0) });
+	assert.deepEqual(await applyPatch('/sites/wp', 'x', { platform: 'darwin', run }), { ok: false, status: 1, stderr: 'error: patch failed: a.php:1\n' });
+	assert.deepEqual(await applyPatch('/sites/wp', 'x', { platform: 'darwin', run }), { ok: false, status: 128, stderr: "error: invalid path '../x'\n" });
 });
