@@ -3,11 +3,12 @@
 /**
  * Git operations for the trunk update path (#94). No Electron dependency, so
  * `node --test` can exercise it against real repositories (same rationale as
- * npm-runner.js). All git I/O goes through isomorphic-git — the app never
- * shells out to a git binary.
+ * npm-runner.js). Reads go through the bundled Git (git-read.cjs, #384);
+ * the writes below still run on isomorphic-git until #385 moves them, flow
+ * by flow. Nothing here ever reaches a git found on the host.
  *
  * main.js owns the IPC plumbing and electron-store writes; the pure
- * statusMatrix/oid decision rules live in git-update.cjs.
+ * status-row/oid decision rules live in git-update.cjs.
  */
 
 const path = require('path');
@@ -20,6 +21,7 @@ const {
 	lockfileChangedFromBlobOids,
 	normalizeEolBuffer
 } = require('./git-update.cjs');
+const { readCommitInfo, resolveRef, statusRows, readBlobs, blobOid } = require('./git-read.cjs');
 
 /**
  * Give isomorphic-git a Windows-only, in-memory view of core.autocrlf=true
@@ -108,55 +110,54 @@ async function ensureAutocrlf(dir, options) {
  * @param {string} dir
  */
 async function readTrunkInfo(dir) {
-	let trunkOid;
+	let info;
 	try {
-		trunkOid = await git.resolveRef({ fs, dir, ref: 'refs/heads/trunk' });
+		info = await readCommitInfo(dir, 'refs/heads/trunk');
 	} catch {
-		trunkOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+		info = await readCommitInfo(dir, 'HEAD');
 	}
-	const { commit } = await git.readCommit({ fs, dir, oid: trunkOid });
-	const trunkDate = new Date(commit.committer.timestamp * 1000).toISOString();
-	return { trunkOid, trunkDate };
+	return { trunkOid: info.oid, trunkDate: info.date };
 }
 
 async function readLockfileBlobOid(dir, oid) {
 	try {
-		const { oid: blobOid } = await git.readBlob({ fs, dir, oid, filepath: 'package-lock.json' });
-		return blobOid;
+		return await blobOid(dir, oid, 'package-lock.json');
 	} catch {
 		return null;
 	}
 }
 
-// statusMatrix's autocrlf normalization only covers valid-UTF8 files, so
-// non-UTF8 text fixtures (wordpress-develop's Big5/Latin-1 encoding tests)
-// smudged to CRLF by a native-git checkout still hash as modified. Confirm
-// with a byte-level, encoding-agnostic comparison.
-async function isCrlfOnlyChange(dir, headOid, filepath) {
+// Git's autocrlf handling is byte-based, but on macOS and Linux the app runs
+// with no autocrlf at all, so a file a native-git checkout smudged to CRLF
+// still reports as modified there. Confirm with a byte-level,
+// encoding-agnostic comparison against the blob HEAD holds.
+async function isCrlfOnlyChange(dir, filepath, headBlob) {
+	if (!headBlob) return false;
 	try {
-		const { blob } = await git.readBlob({ fs, dir, oid: headOid, filepath });
 		const work = await fs.promises.readFile(path.join(dir, filepath));
-		return normalizeEolBuffer(Buffer.from(blob)).equals(normalizeEolBuffer(work));
+		return normalizeEolBuffer(headBlob).equals(normalizeEolBuffer(work));
 	} catch {
 		return false;
 	}
 }
 
 /**
- * The files that genuinely differ from HEAD — statusMatrix candidates minus
+ * The files that genuinely differ from HEAD — status candidates minus
  * CRLF-only false positives. What this returns is what the dirty-tree dialog
  * lists, and it matches what patch generation would emit.
  *
  * @param {string} dir
  */
 async function collectDirtyFiles(dir) {
-	const gitFs = await ensureAutocrlf(dir);
-	const matrix = await git.statusMatrix({ fs: gitFs, dir });
-	let headOid = null;
-	try { headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+	const matrix = await statusRows(dir);
+	const headOid = await resolveRef(dir, 'HEAD');
+	const { rows } = isDirtyFromStatusMatrix(matrix);
+	const modified = rows.filter(([, head, workdir]) => head === 1 && workdir === 2).map(([filepath]) => filepath);
+	// One spawn for every candidate blob rather than one per file.
+	const headBlobs = headOid ? await readBlobs(dir, headOid, modified) : new Map();
 	const files = [];
-	for (const [filepath, head, workdir] of isDirtyFromStatusMatrix(matrix).rows) {
-		if (head === 1 && workdir === 2 && headOid && await isCrlfOnlyChange(dir, headOid, filepath)) continue;
+	for (const [filepath, head, workdir] of rows) {
+		if (head === 1 && workdir === 2 && await isCrlfOnlyChange(dir, filepath, headBlobs.get(filepath))) continue;
 		files.push(filepath);
 	}
 	return files;

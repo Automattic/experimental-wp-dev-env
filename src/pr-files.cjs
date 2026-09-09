@@ -20,9 +20,10 @@
  * side — is carried byte-for-byte, which is the one thing the `.diff` cannot
  * do.
  *
- * Kept out of main.js and behind injected dependencies (platform, stat, git)
- * so both sides of the platform split below are exercised by `node --test`
- * from one machine — the house pattern, per win-spawn-patch.test.cjs.
+ * Kept out of main.js and behind injected dependencies (platform, stat,
+ * treeEntryMode) so both sides of the platform split below are exercised by
+ * `node --test` from one machine — the house pattern, per
+ * win-spawn-patch.test.cjs.
  */
 
 const path = require('path');
@@ -71,28 +72,19 @@ function isProbablyBinary(buf) {
 }
 
 /**
- * The mode git recorded for one path in one commit, read by walking that
- * path's trees rather than the whole commit: a full walk of wordpress-develop
- * is tens of thousands of entries to answer a question about five files.
+ * The mode git recorded for one path in one commit: one `ls-tree` on the
+ * path (git-read.cjs) rather than a walk of the whole commit, which for
+ * wordpress-develop is tens of thousands of entries to answer a question
+ * about five files.
  *
- * @param {Object} deps     `{ git, fs, dir }`
+ * @param {Object} deps     `{ treeEntryMode, dir }`
  * @param {string} oid
  * @param {string} filepath
  * @return {Promise<string|null>}
  */
 async function modeInCommit(deps, oid, filepath) {
-	const { git, fs, dir } = deps;
-	const { commit } = await git.readCommit({ fs, dir, oid });
-	let treeOid = commit.tree;
-	const segments = filepath.split('/');
-	for (let i = 0; i < segments.length; i++) {
-		const { tree } = await git.readTree({ fs, dir, oid: treeOid });
-		const entry = tree.find((e) => e.path === segments[i]);
-		if (!entry) return null;
-		if (i === segments.length - 1) return entry.mode;
-		treeOid = entry.oid;
-	}
-	return null;
+	const { treeEntryMode, dir } = deps;
+	return treeEntryMode(dir, oid, filepath);
 }
 
 /**
@@ -105,7 +97,7 @@ async function modeInCommit(deps, oid, filepath) {
  * added file on Windows has no recorded mode and no bit to read, so 100644 is
  * the only answer available, and the right one for source.
  *
- * @param {Object} deps `{ git, fs, dir, headOid, platform, stat }`
+ * @param {Object} deps `{ treeEntryMode, fs, dir, headOid, platform, stat }`
  * @param {Object} file One collectChangedFiles entry.
  * @return {Promise<string>}
  */
@@ -138,7 +130,7 @@ async function fileModeForEntry(deps, file) {
  * alternatives are committing a deletion or an empty file under that path.
  *
  * @param {Array}  files
- * @param {Object} deps  `{ git, fs, dir, headOid, platform, stat }`
+ * @param {Object} deps  `{ treeEntryMode, fs, dir, headOid, platform, stat }`
  * @return {Promise<Array<{path: string, kind: string, content: Buffer|null, mode: string}>>}
  */
 async function buildPullRequestEntries(files, deps) {

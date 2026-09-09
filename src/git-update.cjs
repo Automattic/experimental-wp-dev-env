@@ -1,11 +1,13 @@
 'use strict';
 
 /**
- * Pure helpers for the trunk update path (issue #94), operating on
- * isomorphic-git statusMatrix rows and blob oids. Kept dependency-free so
- * `node --test` can require them directly while the git I/O stays in main.js.
+ * Pure helpers for the trunk update path (issue #94), operating on the app's
+ * status rows and on blob oids. Kept dependency-free so `node --test` can
+ * require them directly while the git I/O stays in git-read.cjs and main.js.
  *
- * statusMatrix row shape: [filepath, head, workdir, stage] where
+ * Status row shape (isomorphic-git's statusMatrix vocabulary, which
+ * git-read.cjs keeps producing from `git status --porcelain=v2`):
+ * [filepath, head, workdir, stage] where
  * head: 0 absent, 1 present; workdir: 0 absent, 1 identical, 2 different;
  * stage: 0 absent, 1 identical, 2 modified-staged, 3 modified-unstaged.
  */

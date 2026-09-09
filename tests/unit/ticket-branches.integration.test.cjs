@@ -1,7 +1,10 @@
 'use strict';
 
 // Integration tests for src/ticket-branches.js (#108) against real on-disk
-// repositories — no mocking of isomorphic-git, same as the trunk-update suite.
+// repositories — no mocking of either engine, same as the trunk-update suite.
+// The fixture is built by isomorphic-git and read by the bundled Git (#384),
+// which is the two-engine agreement check phase 2 asks for: every read below
+// answers about a repository the other engine wrote.
 //
 // The fixture mirrors what a site actually looks like: a `trunk` branch holding
 // a wordpress-develop-shaped tree, plus a gitignored `node_modules` standing in
@@ -26,6 +29,7 @@ const {
 	deleteTicketBranch
 } = require('../../src/ticket-branches.js');
 const { describeSwitchProgress } = require('../../src/switch-progress.cjs');
+const { git: bundledGit } = require('./helpers/git.cjs');
 
 const AUTHOR = { name: 'test', email: 'test@example.com' };
 
@@ -341,4 +345,19 @@ test('a switch without a progress callback still works (issue #173)', async (t) 
 
 	assert.equal(result.switched, true);
 	assert.equal(result.parked, true);
+});
+
+test('a detached HEAD, which only a user\'s own client makes, reads as no branch (issue #384)', async (t) => {
+	const { dir } = await makeSite(t);
+	assert.equal(await currentBranchName(dir), TRUNK);
+	assert.equal(bundledGit(['checkout', '-q', '--detach'], dir).status, 0);
+	assert.equal(await currentBranchName(dir), null);
+});
+
+test('a branch made by hand in a real git client shows up next to the app\'s own (issue #384)', async (t) => {
+	const { dir } = await makeSite(t);
+	await startTicketBranch(dir, 60001);
+	assert.equal(bundledGit(['branch', 'ticket/60002'], dir).status, 0);
+	assert.equal(bundledGit(['branch', 'experiment'], dir).status, 0);
+	assert.deepEqual((await listTicketBranches(dir)).sort(), ['experiment', 'ticket/60001', 'ticket/60002']);
 });

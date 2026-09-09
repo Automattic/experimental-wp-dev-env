@@ -35,6 +35,7 @@ const { fetchLinkedPrs, fetchPrDiff } = require('./github-prs');
 const { getClientId: getGithubClientId, requestDeviceCode, pollForToken, fetchViewer } = require('./github-auth.cjs');
 const { openPullRequest, buildPullRequestBody, testMode: githubTestMode } = require('./github-pr.cjs');
 const { buildPullRequestEntries } = require('./pr-files.cjs');
+const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode } = require('./git-read.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
 const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
 const { deleteRegisteredSite, revealRegisteredSite, clearRegisteredSiteLog } = require('./site-registry');
@@ -432,7 +433,11 @@ function buildPatchHtml(content) {
 // Returns the base commit alongside the files because the pull request needs it
 // as the commit's parent, and it is the same oid the diff was taken against.
 async function collectChangedFiles(dir, baseOid = null) {
-    const gitFs = await ensureAutocrlf(dir) || fs;
+    // Still the first call, and still awaited: the sites:add and patch tests
+    // end the handler here, and a directory that is not a repository fails
+    // here too. Line endings themselves are the binary's business now
+    // (crlfArgs in git-read.cjs).
+    await ensureAutocrlf(dir);
     // The diff base is the branch point of whatever ticket is being worked on
     // (#108) — the trunk snapshot this branch was created from, passed in by the
     // caller from the site's registry entry.
@@ -456,26 +461,37 @@ async function collectChangedFiles(dir, baseOid = null) {
         // No branch point on record: a site still on trunk, or one adopted from
         // disk. HEAD is the trunk snapshot there, which is what this always used
         // to diff against.
-        try { base = await git.resolveRef({ fs: gitFs, dir, ref: 'HEAD' }); } catch {}
+        try { base = await resolveRef(dir, 'HEAD'); } catch {}
         if (!base) {
-            try { base = await git.resolveRef({ fs: gitFs, dir, ref: 'refs/heads/trunk' }); } catch {}
+            try { base = await resolveRef(dir, 'refs/heads/trunk'); } catch {}
         }
+    }
+    if (!base) {
+        // Nothing to compare against: `.git` is gone, unreadable, or has no
+        // commit. An error, not "No changes": a patch panel that quietly shows
+        // nothing for a broken site is the failure nobody reports.
+        throw new Error(`${dir} is not a repository the app can read: no HEAD and no trunk to compare against.`);
     }
 
     // One scan, against the branch point. Untracked files need no staging to
-    // appear: statusMatrix already reports them as [path, 0, 2, 0] and the
+    // appear: the scan already reports them as [path, 0, 2, 0] and the
     // head !== workdir filter below keeps them. The `git.add` loop that used to
     // stand here staged every untracked file into the contributor's real index
     // and never unstaged it (#85) — with the branch point as the base it earns
     // nothing, so it is gone. (`staleStagedPaths` in trunk-update.js stays: it
     // still has to clean up residue left in indexes by earlier versions.)
-    const matrix = await git.statusMatrix({ fs: gitFs, dir, ref: base });
+    const matrix = await changesAgainst(dir, base);
     const changed = matrix.filter(([, head, workdir]) => head !== workdir);
+    // Every base blob in one spawn, rather than one process per changed file.
+    // A failed batch reads as every base unreadable, which classifyChangedFile
+    // names above the diff rather than diffing: wider than the per-file catch
+    // this replaced, but on the safe side.
+    const inBase = changed.filter(([, head]) => head !== 0).map(([filepath]) => filepath);
+    const baseBlobs = await readBlobs(dir, base, inBase).catch(() => new Map());
     const files = [];
     for (const [filepath, head, workdir] of changed) {
         const abs = path.join(dir, filepath);
         const workBuf = workdir ? await fs.promises.readFile(abs).catch(() => null) : null;
-        const baseBlob = head && base ? await git.readBlob({ fs: gitFs, dir, oid: base, filepath }).catch(() => null) : null;
         files.push({
             path: filepath,
             // The status codes, not the buffers, are what say whether a file is
@@ -485,7 +501,7 @@ async function collectChangedFiles(dir, baseOid = null) {
             // nobody removed (#85).
             inHead: head !== 0,
             inWorkdir: workdir !== 0,
-            base: baseBlob ? Buffer.from(baseBlob.blob) : null,
+            base: (head !== 0 && baseBlobs.get(filepath)) || null,
             work: workBuf
         });
     }
@@ -670,7 +686,7 @@ async function collectPullRequestFiles(dir, baseOid = null) {
     // the commit the files were compared against, which under #108 is the
     // branch point — the same oid the pull request needs as its parent, so the
     // value is right even where the name has not caught up.
-    const entries = await buildPullRequestEntries(files, { git, fs, dir, headOid: base, platform: process.platform });
+    const entries = await buildPullRequestEntries(files, { treeEntryMode, fs, dir, headOid: base, platform: process.platform });
     return { baseOid: base, files: entries };
 }
 
@@ -1227,8 +1243,8 @@ async function baseProvenance(dir, baseOid, meta) {
         return { trunkOid: meta.trunkOid, trunkDate: meta.trunkDate };
     }
     try {
-        const { commit } = await git.readCommit({ fs, dir, oid: baseOid });
-        return { trunkOid: baseOid, trunkDate: new Date(commit.committer.timestamp * 1000).toISOString() };
+        const { date } = await readCommitInfo(dir, baseOid);
+        return { trunkOid: baseOid, trunkDate: date };
     } catch {
         return { trunkOid: baseOid, trunkDate: null };
     }

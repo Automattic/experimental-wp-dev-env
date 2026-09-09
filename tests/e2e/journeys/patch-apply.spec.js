@@ -113,6 +113,11 @@ test( 'reverting puts the checkout back and leaves unrelated work alone', async 
 
 	await revert.click();
 	await expect( revert ).toHaveCount( 0, { timeout: 60_000 } );
+	// The button leaves the moment the revert starts, so it is not the signal
+	// that the revert finished. The next-step line is: it names the operation
+	// while it runs and moves on once the status has been reloaded, which
+	// happens after the checkout and the record are both written.
+	await expect( page.getByText( 'A patch is being applied or reverted.' ) ).toHaveCount( 0, { timeout: 60_000 } );
 
 	// INVARIANT — the patched file is back, byte for byte.
 	expect( read( site.dir, LOGIN ) ).toBe( `${ TRUNK_LOGIN }\n` );
