@@ -149,3 +149,11 @@ test('on Windows the autocrlf view and long paths reach the status and diff comm
 	assert.deepEqual(commands.map((args) => args[4]), ['status', 'diff', 'ls-files']);
 });
 
+
+test('isLegacySite reads no config when the repository is not shallow (#385)', async () => {
+	const seen = [];
+	const run = async (args, options) => { seen.push({ args, options }); return { status: 1, stdout: Buffer.alloc(0), stderr: '' }; };
+	// A directory with no .git/shallow: the answer is known without a spawn.
+	assert.equal(await read.isLegacySite(__dirname, { run }), false);
+	assert.deepEqual(seen, []);
+});

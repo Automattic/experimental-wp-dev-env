@@ -33,7 +33,7 @@ const { fetchLinkedPrs, fetchPrDiff } = require('./github-prs');
 const { getClientId: getGithubClientId, requestDeviceCode, pollForToken, fetchViewer } = require('./github-auth.cjs');
 const { openPullRequest, buildPullRequestBody, testMode: githubTestMode } = require('./github-pr.cjs');
 const { buildPullRequestEntries } = require('./pr-files.cjs');
-const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode } = require('./git-read.cjs');
+const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite } = require('./git-read.cjs');
 const { cloneSite } = require('./git-clone.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
 const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
@@ -68,6 +68,7 @@ const SWITCH_PROGRESS_CHANNEL = 'switch:progress';
 // "Saving your work…" about trunk — which is the one thing this refuses to do.
 const CARRIED_WORK_CHANNEL = 'ticket:carried-work';
 const { parseTicketRef } = require('./renderer/trac-ticket.cjs');
+const { LEGACY_SITE_ERROR } = require('./renderer/legacy-site.cjs');
 const { parseHandle } = require('./wporg-handle.cjs');
 const { parseEventName, buildProvenanceHeader, handoffFilename } = require('./patch-provenance.cjs');
 const { describeRefused } = require('./safe-log');
@@ -1089,6 +1090,28 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
 }
 
 /**
+ * A site the old engine made is read but never written (#385): the binary and
+ * isomorphic-git disagree on what a shallow checkout may do, and the decision
+ * was a new site rather than a migration. Same shape as `midSwitchBlock`, so
+ * the handlers and the renderer treat both refusals alike. Delete, the patch
+ * export and opening a pull request are deliberately not behind it: they are
+ * how the work leaves, and none of them touches the checkout. Two writes
+ * outside the checkout still reach such a site on purpose: `site:status`
+ * keeps `.git/info/exclude` current, and the export's `ensureAutocrlf` may
+ * write `core.autocrlf` on Windows until the patch flow moves (#385).
+ *
+ * The export covers the branch that is checked out. Work parked on another
+ * ticket's branch needs a switch to reach, and the switch is refused, so it
+ * stays where it is; the docs say so.
+ *
+ * @param {string} sitePath
+ */
+async function legacySiteBlock(sitePath) {
+    if (!await isLegacySite(sitePath)) return null;
+    return { ok: false, code: 'legacy-site', error: LEGACY_SITE_ERROR };
+}
+
+/**
  * Runs a branch switch with the mid-switch marker around it. The marker is set
  * only when the checkout itself fails: a failure while parking moved nothing, so
  * a retry is safe and does not deserve a blocked site.
@@ -1345,6 +1368,8 @@ ipcMain.handle('git:unsubmitted-work', async (_e, sitePath) => {
 // work it just promised to throw away.
 ipcMain.handle('git:discard-to-base', async (_e, sitePath) => {
     try {
+        const legacy = await legacySiteBlock(sitePath);
+        if (legacy) return legacy;
         const baseOid = await patchBaseOid(sitePath);
         if (baseOid) {
             await discardToBase(sitePath, baseOid);
@@ -1364,6 +1389,8 @@ ipcMain.handle('git:discard-to-base', async (_e, sitePath) => {
 
 ipcMain.handle('git:discard-changes', async (_e, sitePath) => {
     try {
+        const legacy = await legacySiteBlock(sitePath);
+        if (legacy) return legacy;
         await discardChanges(sitePath);
         // Clearing the applied-patch record belongs with the reset that removed
         // the patch from the tree — not with the trunk update that may follow and
@@ -1406,7 +1433,7 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
         try {
             // The update rewrites `trunk` and checks it out, so it has to run
             // from trunk (#108). Park the ticket first, and return to it after.
-            const blocked = await midSwitchBlock(sitePath);
+            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath);
             if (blocked) { sendLog(`\n${blocked.error}\n`); sendDone(blocked); return; }
 
             const active = await activeBranch(sitePath, { migrate: true });
@@ -1682,6 +1709,8 @@ ipcMain.handle('git:apply-patch', async (event, sitePath, options = {}) => {
                 sendDone({ ok: false, error: 'Site is not registered' });
                 return;
             }
+            const legacy = await legacySiteBlock(sitePath);
+            if (legacy) { sendLog(`\n${legacy.error}\n`); sendDone(legacy); return; }
             const stored = (await readWorkMeta(sitePath)).appliedPatch;
             if (reverse) {
                 if (!stored || !stored.text) {
@@ -1849,6 +1878,11 @@ ipcMain.handle('site:status', async (_e, sitePath) => {
 		// would carry the other one's "patch applied · Revert" banner over, and
 		// Revert would reverse its hunks against this ticket's tree.
 		const work = await readWorkMeta(sitePath);
+		// A site the old engine made (#385): the card says so and the write
+		// handlers refuse. A detector that fails answers false, the same as a
+		// trunk read that fails answers null above: the status stays usable.
+		let legacy = false;
+		try { legacy = await isLegacySite(sitePath); } catch {}
 		// A recorded branch point and the current trunk tip are enough to warn
 		// that the context changed (#305). Missing metadata stays false: 1.0
 		// refuses to guess, and deliberately offers no checkout rewrite.
@@ -1873,9 +1907,9 @@ ipcMain.handle('site:status', async (_e, sitePath) => {
 			}
 			: null;
 
-		return { hasNodeModules, hasBuilt, skipInitWizard: Boolean(m.skipInitWizard), initialized: Boolean(m.initialized), installFailed: Boolean(m.installFailed), trunkOid, trunkDate, updateIncomplete: Boolean(work.updateIncomplete), tracTicket: m.tracTicket || null, ticketBehindTrunk, appliedPatch };
+		return { hasNodeModules, hasBuilt, skipInitWizard: Boolean(m.skipInitWizard), initialized: Boolean(m.initialized), installFailed: Boolean(m.installFailed), trunkOid, trunkDate, updateIncomplete: Boolean(work.updateIncomplete), tracTicket: m.tracTicket || null, ticketBehindTrunk, appliedPatch, legacy };
 	} catch {
-		return { hasNodeModules: false, hasBuilt: false, skipInitWizard: false, initialized: false, installFailed: false, trunkOid: null, trunkDate: null, updateIncomplete: false, tracTicket: null, ticketBehindTrunk: false, appliedPatch: null };
+		return { hasNodeModules: false, hasBuilt: false, skipInitWizard: false, initialized: false, installFailed: false, trunkOid: null, trunkDate: null, updateIncomplete: false, tracTicket: null, ticketBehindTrunk: false, appliedPatch: null, legacy: false };
 	}
 });
 
@@ -2099,6 +2133,8 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 	// land here, and neither is an error. The branch and its work stay; going
 	// back to trunk is not the same as throwing a ticket away.
 	const raw = typeof ref === 'string' ? ref.trim() : '';
+	const legacy = await legacySiteBlock(sitePath);
+	if (legacy) return legacy;
 	if (!raw) {
 		const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
 		// Under a mid-switch marker the tree may be half another branch's and
@@ -2231,7 +2267,7 @@ ipcMain.handle('branches:list', async (_e, sitePath) => withRegisteredSite(siteP
 }));
 
 ipcMain.handle('branches:switch', async (event, sitePath, targetRef) => withRegisteredSite(sitePath, async () => {
-	const blocked = await midSwitchBlock(sitePath, { retryTo: targetRef });
+	const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath, { retryTo: targetRef });
 	if (blocked) return blocked;
 	const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
 	const progress = switchProgressReporter(event, sitePath);
@@ -2255,6 +2291,8 @@ ipcMain.handle('branches:switch', async (event, sitePath, targetRef) => withRegi
 // registry entry goes with it, or the switcher would keep offering a ticket that
 // no longer exists.
 ipcMain.handle('branches:delete', async (_e, sitePath, targetRef) => withRegisteredSite(sitePath, async () => {
+	const legacy = await legacySiteBlock(sitePath);
+	if (legacy) return legacy;
 	// Deleting a ticket you are not on leaves you where you are — the module
 	// only checks out trunk when the branch being deleted is the current one, so
 	// resetting these unconditionally would unlink the ticket the contributor is

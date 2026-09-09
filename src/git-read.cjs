@@ -18,6 +18,8 @@
  * described there.
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { runGit } = require('./git-run.cjs');
 
 const NUL = 0;
@@ -272,6 +274,34 @@ async function windowsArgs(dir, { platform = process.platform, run = runGit } = 
 }
 
 /**
+ * Whether the old engine made this site (#385).
+ *
+ * Two shapes, told apart by what each clone wrote into the repository. The
+ * bundled Git clones partial (`--filter=blob:none`, git-clone.cjs): the
+ * remote carries `remote.origin.promisor` and the repository is never
+ * shallow, because the trunk update only keeps `--depth` when `.git/shallow`
+ * already exists. isomorphic-git cloned shallow: `.git/shallow` is there and
+ * no promisor was ever written. The app stopped writing to those sites when
+ * its writes moved to the binary, since the two engines disagree on what a
+ * shallow checkout may do; the site card says so and offers a new site.
+ *
+ * `.git/shallow` is the first gate so the common cases, a site the binary
+ * made or one adopted from a full clone, answer without spawning anything.
+ * Known false positive: a shallow clone made outside the app and then
+ * adopted, which the app never created and could not update either.
+ *
+ * @param {string}   dir
+ * @param {Object}   [options]
+ * @param {Function} [options.run]
+ * @return {Promise<boolean>}
+ */
+async function isLegacySite(dir, { run = runGit } = {}) {
+	if (!fs.existsSync(path.join(dir, '.git', 'shallow'))) return false;
+	const { status } = await run(['config', '--local', '--get', 'remote.origin.promisor'], { cwd: dir, okCodes: [0, 1] });
+	return status === 1;
+}
+
+/**
  * The commit a ref points at, or null when it does not resolve.
  *
  * @param {string} dir
@@ -433,6 +463,7 @@ module.exports = {
 	parseLsTreeZ,
 	crlfArgs,
 	windowsArgs,
+	isLegacySite,
 	resolveRef,
 	readCommitInfo,
 	currentBranch,

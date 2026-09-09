@@ -124,3 +124,20 @@ test('readBlobs, blobOid and treeEntryMode read one commit without touching the 
 	// The worktree edit above is still there: reads write nothing.
 	assert.equal(fs.readFileSync(path.join(dir, 'src', 'wp-login.php'), 'utf8'), '<?php // edited\n');
 });
+
+test('isLegacySite: shallow without a promisor is the old engine, anything else is not (#385)', async (t) => {
+	const dir = makeRepo(t);
+	assert.equal(await read.isLegacySite(dir), false, 'a full clone is never legacy');
+
+	// What isomorphic-git\'s shallow clone leaves behind: the root commit listed
+	// in .git/shallow and a remote with nothing but url and fetch.
+	const head = git(['rev-parse', 'HEAD'], dir).stdout;
+	fs.writeFileSync(path.join(dir, '.git', 'shallow'), `${head}\n`);
+	assert.equal(git(['remote', 'add', 'origin', 'https://example.test/wordpress-develop.git'], dir).status, 0);
+	assert.equal(await read.isLegacySite(dir), true);
+
+	// The binary\'s partial clone writes the promisor; a shallow file beside it
+	// would not make the site legacy.
+	assert.equal(git(['config', '--local', 'remote.origin.promisor', 'true'], dir).status, 0);
+	assert.equal(await read.isLegacySite(dir), false);
+});

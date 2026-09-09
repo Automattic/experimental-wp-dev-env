@@ -60,16 +60,17 @@ const TRUNK_FILES = {
 /**
  * Creates a repository the app will list, open, and consider ready to work in.
  *
- * @param {Object} session         A Session from ./app.cjs. The directory is
- *                                 registered with it, so it is removed after the
- *                                 app has stopped — doing it earlier fails on
- *                                 Windows, where a directory with open handles
- *                                 cannot be deleted.
- * @param {Object} [options]
- * @param {string} [options.label] The name shown in the sidebar.
+ * @param {Object}  session          A Session from ./app.cjs. The directory is
+ *                                   registered with it, so it is removed after the
+ *                                   app has stopped — doing it earlier fails on
+ *                                   Windows, where a directory with open handles
+ *                                   cannot be deleted.
+ * @param {Object}  [options]
+ * @param {string}  [options.label]  The name shown in the sidebar.
+ * @param {boolean} [options.legacy] Shape the repository the way the old engine's shallow clone did (#385).
  * @return {Promise<{dir: string, baseOid: string, settings: Object}>}
  */
-async function makeSite( session, { label = 'e2e-site' } = {} ) {
+async function makeSite( session, { label = 'e2e-site', legacy = false } = {} ) {
 	const dir = session.track( fs.mkdtempSync( path.join( os.tmpdir(), 'wpct-e2e-site-' ) ) );
 
 	await git.init( { fs, dir, defaultBranch: TRUNK } );
@@ -83,6 +84,15 @@ async function makeSite( session, { label = 'e2e-site' } = {} ) {
 	}
 	await git.add( { fs, dir, filepath: Object.keys( TRUNK_FILES ) } );
 	const baseOid = await git.commit( { fs, dir, message: 'trunk', author: AUTHOR } );
+
+	// What a site the old engine cloned looks like to the app (#385): the root
+	// commit listed in .git/shallow, and a remote with no promisor. The app
+	// detects it from exactly these two facts, so the fixture writes exactly
+	// these two things.
+	if ( legacy ) {
+		fs.writeFileSync( path.join( dir, '.git', 'shallow' ), `${ baseOid }\n` );
+		await git.addRemote( { fs, dir, remote: 'origin', url: 'https://example.test/wordpress-develop.git' } );
+	}
 
 	fs.mkdirSync( path.join( dir, 'node_modules', 'react' ), { recursive: true } );
 	fs.writeFileSync( path.join( dir, SUBSTRATE ), SUBSTRATE_CONTENT );
