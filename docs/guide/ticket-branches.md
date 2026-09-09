@@ -42,7 +42,7 @@ A switch is a scan of the working tree followed by a checkout. On a real `wordpr
 - **Swapping files for #61002… 63%**
 - **Ready to work on #61002**
 
-If the file swap itself fails part-way — an editor or an antivirus holding a file open is the usual cause — the app marks the site and refuses every further ticket action with *A previous switch from … to … did not finish. Retry it before making other changes*. The refusal is on the switch too, so the way out is **Unlink**, which is the one action it allows: that puts you back on trunk, and you can then link the ticket you wanted. Your work on the ticket you were leaving is not at risk; it was committed to its branch before any file moved.
+If the file swap itself fails part-way — an editor or an antivirus holding a file open is the usual cause — the app marks the site and refuses every further ticket action with *A previous switch from … to … did not finish. Retry it before making other changes*. Two actions get through: retrying the same switch (**Continue working on** the ticket it was heading for, or linking it again), and **Unlink**, which puts you back on trunk. Both finish the file swap and nothing else; neither saves the half-swapped files as work. Your work on the ticket you were leaving is not at risk; it was committed to its branch before any file moved.
 
 Do not force-quit during a switch. A killed process writes no such marker, so the half-swapped tree is left behind with nothing saying so.
 

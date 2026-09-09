@@ -124,7 +124,14 @@ test('crlfArgs: Windows adds autocrlf only when the repository does not say', as
 	assert.equal(seen.length, 2, 'no config read off Windows');
 });
 
-test('on Windows the autocrlf view reaches the status and diff commands themselves', async () => {
+test('windowsArgs: long paths ride along with the autocrlf view on Windows, and nothing does elsewhere', async () => {
+	const runWith = (status) => async () => ({ status, stdout: Buffer.alloc(0), stderr: '' });
+	assert.deepEqual(await read.windowsArgs('/site', { platform: 'win32', run: runWith(1) }), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true']);
+	assert.deepEqual(await read.windowsArgs('/site', { platform: 'win32', run: runWith(0) }), ['-c', 'core.longpaths=true']);
+	assert.deepEqual(await read.windowsArgs('/site', { platform: 'darwin', run: runWith(1) }), []);
+});
+
+test('on Windows the autocrlf view and long paths reach the status and diff commands themselves', async () => {
 	// A dropped spread here would be green on every other platform and bring
 	// back the ~5,000 phantom modifications of a CRLF checkout.
 	const argv = [];
@@ -137,8 +144,8 @@ test('on Windows the autocrlf view reaches the status and diff commands themselv
 	const commands = argv.filter((args) => args[0] !== 'config');
 	assert.equal(commands.length, 3);
 	for (const args of commands) {
-		assert.deepEqual(args.slice(0, 2), ['-c', 'core.autocrlf=true'], args.join(' '));
+		assert.deepEqual(args.slice(0, 4), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true'], args.join(' '));
 	}
-	assert.deepEqual(commands.map((args) => args[2]), ['status', 'diff', 'ls-files']);
+	assert.deepEqual(commands.map((args) => args[4]), ['status', 'diff', 'ls-files']);
 });
 

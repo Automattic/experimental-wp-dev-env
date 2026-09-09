@@ -97,9 +97,9 @@ test('throttle: flush with nothing pending emits nothing (issue #173)', () => {
 	assert.deepStrictEqual(emitted, []);
 });
 
-// isomorphic-git awaits whatever onProgress returns. A thenable would put a
-// microtask between every one of ~4400 checkout events, so the callback is
-// synchronous by contract, not by accident.
+// emit runs inside a stderr listener, once per progress line Git prints. A
+// thenable would put a microtask between every one of those events for nobody
+// to await, so the callback is synchronous by contract, not by accident.
 test('throttle: emit is synchronous and returns nothing to await (issue #173)', () => {
 	const { throttle } = harness();
 
@@ -129,20 +129,20 @@ test('throttle: an infinite interval reduces a switch to one line per stage (iss
 
 // --- mapCheckoutPhase ------------------------------------------------------
 
-test('mapCheckoutPhase: the two phases checkout actually emits (issue #173)', () => {
+test('mapCheckoutPhase: the phase checkout actually emits, as git-progress.cjs lowercases it (issue #173)', () => {
 	assert.deepStrictEqual(
-		mapCheckoutPhase({ phase: 'Analyzing workdir', loaded: 12 }),
-		{ stage: 'analyze', loaded: 12, total: undefined }
+		mapCheckoutPhase({ phase: 'updating files', percent: 7, loaded: 3, total: 40 }),
+		{ stage: 'apply', loaded: 3, total: 40 }
 	);
 	assert.deepStrictEqual(
-		mapCheckoutPhase({ phase: 'Updating workdir', loaded: 3, total: 40 }),
+		mapCheckoutPhase({ phase: 'checking out files', loaded: 3, total: 40 }),
 		{ stage: 'apply', loaded: 3, total: 40 }
 	);
 });
 
-// isomorphic-git owns these strings, not us. A version bump that renames or
-// adds one must degrade to a generic stage rather than an undefined that
-// renders as "undefined" in front of a contributor.
+// Git owns these strings, not us. An upgrade that renames or adds one must
+// degrade to a generic stage rather than an undefined that renders as
+// "undefined" in front of a contributor.
 test('mapCheckoutPhase: an unknown phase still produces a usable stage (issue #173)', () => {
 	const mapped = mapCheckoutPhase({ phase: 'Reticulating splines', loaded: 1, total: 2 });
 
@@ -170,9 +170,9 @@ test('describeSwitchProgress: leaving trunk talks about the work, not a branch n
 	assert.doesNotMatch(line, /trunk/);
 });
 
-// `Analyzing workdir` reports `loaded` with no `total`, so there is no honest
-// percentage for that half of the checkout — and a made-up one is worse than
-// none.
+// A stage without a `total` (the old engine's analyze phase reported a running
+// count and nothing else) has no honest percentage, and a made-up one is worse
+// than none.
 test('describeSwitchProgress: a percentage only when there is a total (issue #173)', () => {
 	assert.doesNotMatch(describeSwitchProgress({ stage: 'analyze', loaded: 900 }), /%/);
 	assert.doesNotMatch(describeSwitchProgress({ stage: 'apply', loaded: 5, total: 0 }), /%/);

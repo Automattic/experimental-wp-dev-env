@@ -55,7 +55,7 @@ Layers 1–3 are `npm test`. Layers 4 and 5 are the two `test:e2e` commands. Tha
 ## Where to put a new test
 
 - **A pure function, a derived string, a decision with branches** → layer 1. If it lives inside `src/renderer/index.jsx` today, move it to a `src/renderer/*.cjs` module first: that component mounts at module scope and nothing in the suite can load it, so a decision made there is untestable by construction.
-- **Anything that asks Git a question** → layer 2, against a real repository. There is a local Git server fixture in `tests/unit/trunk-update-fetch.integration.test.cjs` for cases that need a remote, because `isomorphic-git` has no `file://` transport.
+- **Anything that asks Git a question** → layer 2, against a real repository. A remote is a bare repository on disk reached over `file://`, as in `tests/unit/git-clone.integration.test.cjs`; the loopback Git server in `tests/unit/trunk-update-fetch.integration.test.cjs` remains for the flow still on `isomorphic-git`, which has no `file://` transport.
 - **A new IPC handler** → layer 3, plus the `contextBridge` entry in `src/preload.js`, which layer 5 checks is actually exposed.
 - **A flow that spans the interface, the main process, Git and the store at once** → layer 4.
 - **Something that can only break during packaging** → layer 5.

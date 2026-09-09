@@ -2,9 +2,11 @@
 
 // Integration tests for src/ticket-branches.js (#108) against real on-disk
 // repositories — no mocking of either engine, same as the trunk-update suite.
-// The fixture is built by isomorphic-git and read by the bundled Git (#384),
-// which is the two-engine agreement check phase 2 asks for: every read below
-// answers about a repository the other engine wrote.
+// The fixture is built by isomorphic-git; the bundled Git reads it (#384) and
+// now writes it too (#385), and isomorphic-git reads back what the binary
+// wrote. That is the two-engine agreement check in both directions: a site
+// the old engine made keeps working, and what the new one writes is a
+// repository the old one still understands.
 //
 // The fixture mirrors what a site actually looks like: a `trunk` branch holding
 // a wordpress-develop-shaped tree, plus a gitignored `node_modules` standing in
@@ -13,11 +15,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const git = require('isomorphic-git');
 const {
 	TRUNK,
+	WIP_AUTHOR,
+	WIP_MESSAGE,
 	ticketBranchRef,
 	ticketIdFromRef,
 	currentBranchName,
@@ -26,17 +29,23 @@ const {
 	parkCurrentWork,
 	startTicketBranch,
 	switchToBranch,
-	deleteTicketBranch
+	deleteTicketBranch,
+	resumeSwitch
 } = require('../../src/ticket-branches.js');
 const { describeSwitchProgress } = require('../../src/switch-progress.cjs');
-const { git: bundledGit } = require('./helpers/git.cjs');
+const { git: bundledGit, tempDir } = require('./helpers/git.cjs');
 
 const AUTHOR = { name: 'test', email: 'test@example.com' };
 
 async function makeSite(t) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-branches-test-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	// tempDir rather than a bare rmSync: the binary writes its objects
+	// read-only, and on Windows rmSync answers that with EPERM (#381).
+	const dir = tempDir(t, 'ticket-branches-test-');
 	await git.init({ fs, dir, defaultBranch: TRUNK });
+	// The shape the clone writes (git-clone.cjs): a site the app supports has
+	// core.autocrlf pinned, so the binary's checkout writes LF on Windows too
+	// and the byte-for-byte assertions mean the same on every platform.
+	await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\nbuild/\n');
 	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
 	fs.writeFileSync(path.join(dir, 'doomed.php'), '<?php // to be deleted\n');
@@ -360,4 +369,190 @@ test('a branch made by hand in a real git client shows up next to the app\'s own
 	assert.equal(bundledGit(['branch', 'ticket/60002'], dir).status, 0);
 	assert.equal(bundledGit(['branch', 'experiment'], dir).status, 0);
 	assert.deepEqual((await listTicketBranches(dir)).sort(), ['experiment', 'ticket/60001', 'ticket/60002']);
+});
+
+// --- what the bundled Git writes (issue #385) --------------------------------
+
+test('the WIP commit carries the app\'s identity as author and committer, and its message (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const { baseOid } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+
+	const { oid } = await parkCurrentWork(dir, { baseOid });
+
+	const { stdout } = bundledGit(['log', '-1', '--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce%x00%s', 'HEAD'], dir);
+	assert.deepEqual(stdout.split('\0'), [oid, baseOid, WIP_AUTHOR.name, WIP_AUTHOR.email, WIP_AUTHOR.name, WIP_AUTHOR.email, WIP_MESSAGE]);
+});
+
+// A park is a commit of the whole worktree: afterwards HEAD, the index and the
+// files on disk must agree, or the checkout that follows would have something
+// to preserve and something to lose.
+test('after a park the worktree is clean against HEAD, deletions included (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const { baseOid } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	fs.writeFileSync(path.join(dir, 'added.php'), '<?php // added\n');
+	fs.unlinkSync(path.join(dir, 'doomed.php'));
+
+	await parkCurrentWork(dir, { baseOid });
+
+	assert.equal(bundledGit(['status', '--porcelain=v2', '-z', '--untracked-files=all'], dir).stdout, '');
+	assert.equal(bundledGit(['ls-tree', '--name-only', 'HEAD'], dir).stdout.split('\n').includes('doomed.php'), false, 'the deletion is in the commit');
+});
+
+// Status hands back raw names and `add` takes pathspecs, which glob unless
+// told otherwise: a bracket or a star in a filename has to survive as itself.
+test('files whose names look like globs, or hold spaces, are parked and restored literally (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const first = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'weird[1].php'), '<?php // literal\n');
+	fs.writeFileSync(path.join(dir, 'weird1.php'), '<?php // the glob would match this one too\n');
+	fs.writeFileSync(path.join(dir, 'with space.php'), '<?php // spaced\n');
+
+	await switchToBranch(dir, TRUNK, { baseOid: first.baseOid });
+	assert.equal(exists(dir, 'weird[1].php'), false);
+	assert.equal(exists(dir, 'with space.php'), false);
+	await switchToBranch(dir, first.ref, { baseOid: first.baseOid });
+
+	assert.equal(read(dir, 'weird[1].php'), '<?php // literal\n');
+	assert.equal(read(dir, 'weird1.php'), '<?php // the glob would match this one too\n');
+	assert.equal(read(dir, 'with space.php'), '<?php // spaced\n');
+});
+
+// Starting a ticket is a ref and a HEAD move, never a checkout: the index file
+// is not rewritten, which is the cheapest proof that no file was either.
+test('starting a ticket does not rewrite the index (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // loose\n');
+	const before = fs.statSync(path.join(dir, '.git', 'index')).mtimeMs;
+
+	await startTicketBranch(dir, 59234);
+
+	assert.equal(fs.statSync(path.join(dir, '.git', 'index')).mtimeMs, before);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // loose\n');
+});
+
+// A second writer in the same site — a mentor's own client, an editor's git
+// integration — holds the ref lock. The park must fail loudly rather than
+// overwrite, and must not be mistaken for a half-done checkout: the `stage`
+// tag is what makes withSwitchMarker refuse further parks, and nothing was
+// swapped here.
+test('a park that cannot take the ref lock rejects without claiming a checkout failed (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const { ref, baseOid } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	fs.mkdirSync(path.join(dir, '.git', 'refs', 'heads', 'ticket'), { recursive: true });
+	fs.writeFileSync(path.join(dir, '.git', 'refs', 'heads', 'ticket', '59234.lock'), '');
+
+	await assert.rejects(() => parkCurrentWork(dir, { baseOid }), (e) => {
+		assert.equal(e.name, 'GitError');
+		assert.match(e.message, /lock/);
+		assert.equal(e.stage, undefined);
+		return true;
+	});
+	assert.equal(bundledGit(['rev-parse', ref], dir).stdout, baseOid, 'the branch did not move');
+	assert.equal(read(dir, 'wp-login.php'), '<?php // work\n', 'and the work is still on disk');
+});
+
+// The other half of the same contract: a checkout that fails is tagged with
+// the stage and both ends of the switch, which is what main.js records so the
+// site is not parked over a half-swapped worktree. Another writer holding the
+// index lock is the realistic trigger; the scan before it runs without the
+// lock (`--no-optional-locks`), so the refusal is the checkout's own.
+test('a checkout that fails is tagged with the stage and both branches (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const { ref, baseOid } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	await switchToBranch(dir, TRUNK, { baseOid });
+	fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
+
+	await assert.rejects(() => switchToBranch(dir, ref, { baseOid }), (e) => {
+		assert.equal(e.name, 'GitError');
+		assert.match(e.message, /index\.lock/);
+		assert.equal(e.stage, 'checkout');
+		assert.equal(e.from, TRUNK);
+		assert.equal(e.to, ref);
+		return true;
+	});
+	assert.equal(await currentBranchName(dir), TRUNK, 'HEAD stayed where it was');
+	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n', 'and so did the worktree');
+});
+
+// The checkout is a child process the quit sweep has to be able to reach; the
+// switch and the delete both hand it out, the way the clone does.
+test('a switch and a delete hand their checkout child to the caller (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	const children = [];
+
+	await switchToBranch(dir, TRUNK, { baseOid, onChild: (child) => children.push(child) });
+	await switchToBranch(dir, ref, { baseOid, onChild: (child) => children.push(child) });
+	await deleteTicketBranch(dir, ref, { onChild: (child) => children.push(child) });
+
+	assert.equal(children.length, 3);
+	for (const child of children) assert.equal(typeof child.pid, 'number');
+});
+
+// The index states a contributor's own client leaves behind, which the status
+// rows report differently from the old engine (git-read.cjs documents each):
+// the park has to end in the same place regardless — one commit of what is on
+// disk, and a clean tree against it.
+test('a park absorbs intent-to-add, rm --cached and staged-then-reverted files into one commit of the worktree (issue #385)', async (t) => {
+	const { dir } = await makeSite(t);
+	const { baseOid } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'intent.php'), '<?php // intent to add\n');
+	assert.equal(bundledGit(['add', '-N', 'intent.php'], dir).status, 0);
+	assert.equal(bundledGit(['rm', '--cached', '-q', 'doomed.php'], dir).status, 0, 'removed from the index, kept on disk');
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // staged\n');
+	assert.equal(bundledGit(['add', 'wp-login.php'], dir).status, 0);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
+
+	const { parked } = await parkCurrentWork(dir, { baseOid });
+
+	assert.equal(parked, true);
+	assert.equal(bundledGit(['status', '--porcelain=v2', '-z', '--untracked-files=all'], dir).stdout, '', 'clean against the WIP commit');
+	const tree = bundledGit(['ls-tree', '--name-only', 'HEAD'], dir).stdout.split('\n').sort();
+	assert.deepEqual(tree, ['.gitignore', 'doomed.php', 'intent.php', 'wp-login.php'], 'what is on disk is what was committed');
+	assert.equal(bundledGit(['show', 'HEAD:wp-login.php'], dir).stdout, '<?php // trunk', 'the reverted file was committed as it is on disk, not as it was staged');
+	assert.equal(bundledGit(['rev-list', '--count', 'HEAD'], dir).stdout, '2', 'one WIP commit on the branch point');
+});
+
+// The way out of a switch that died in its checkout (#385). The branch being
+// left parked before any file moved, so finishing is the forced checkout
+// alone: parking again would write the half-swapped tree over that WIP
+// commit. Retrying to the same destination and going back to trunk are the
+// same operation with a different ref.
+test('resumeSwitch finishes a failed switch without parking the half-swapped tree over the WIP (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	await switchToBranch(dir, TRUNK, { baseOid });
+	const wip = await git.resolveRef({ fs, dir, ref });
+	// What a checkout that died part-way leaves: HEAD still on trunk, a file
+	// that already holds the destination's content, and one that does not.
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	fs.writeFileSync(path.join(dir, 'doomed.php'), 'half swapped\n');
+
+	const result = await resumeSwitch(dir, ref);
+
+	assert.deepEqual(result, { switched: true, from: TRUNK, to: ref, parked: false });
+	assert.equal(await currentBranchName(dir), ref);
+	assert.equal(await git.resolveRef({ fs, dir, ref }), wip, 'the WIP commit was not rewritten');
+	assert.equal(read(dir, 'wp-login.php'), '<?php // work\n');
+	assert.equal(await hasChangesAgainst(dir), false, 'the tree is the destination, nothing left over');
+
+	// And back to trunk from a mixed tree, with the ticket's commit intact.
+	fs.writeFileSync(path.join(dir, 'doomed.php'), 'mixed again\n');
+	const back = await resumeSwitch(dir, TRUNK);
+	assert.equal(back.parked, false);
+	assert.equal(await currentBranchName(dir), TRUNK);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n');
+	assert.equal(await git.resolveRef({ fs, dir, ref }), wip);
+
+	// Already on the destination: still a repair, not a no-op.
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), 'stray\n');
+	const same = await resumeSwitch(dir, TRUNK);
+	assert.equal(same.switched, false);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n');
 });
