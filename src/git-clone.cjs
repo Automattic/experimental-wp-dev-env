@@ -21,13 +21,13 @@
  * assumes; `core.symlinks=false` matches what the old engine wrote; and on
  * Windows `core.longpaths=true` because the tree has paths past MAX_PATH.
  *
- * Progress arrives on stderr as the lines Git prints for a human, parsed by
- * git-progress.cjs, the one place the app reads non-porcelain output.
+ * Progress arrives on stderr as the lines Git prints for a human, read by
+ * `streamGit` (git-run.cjs) and parsed by git-progress.cjs, the one place
+ * the app reads non-porcelain output.
  */
 
 const path = require('path');
-const { spawnGit, GitError } = require('./git-run.cjs');
-const { createProgressReader, failureReason } = require('./git-progress.cjs');
+const { streamGit } = require('./git-run.cjs');
 
 /**
  * The branch a new site checks out. `trunk` is the pristine snapshot every
@@ -75,48 +75,11 @@ function cloneArgs({ url, dir, branch = DEFAULT_BRANCH, platform = process.platf
  * @param {Function} [root0.spawn]      Injection point for tests.
  * @return {Promise<{dir: string}>}
  */
-function cloneSite({ url, dir, branch = DEFAULT_BRANCH, onProgress = null, onChild = null, platform = process.platform, spawn } = {}) {
-	return new Promise((resolve, reject) => {
-		const args = cloneArgs({ url, dir, branch, platform });
-		// The parent is the working directory: `dir` may not exist yet, and a
-		// clone is the one command whose target is an argument, not the cwd.
-		const cwd = path.dirname(dir);
-		let child;
-		try {
-			child = spawnGit(args, { cwd, ...(spawn ? { spawn } : {}) });
-		} catch (error) {
-			reject(error);
-			return;
-		}
-		if (onChild) onChild(child);
-
-		const reader = createProgressReader((event) => { if (onProgress) onProgress(event); });
-		const stderr = [];
-		let settled = false;
-		child.stdout.on('data', () => {});
-		child.stderr.on('data', (chunk) => {
-			const text = chunk.toString('utf8');
-			stderr.push(text);
-			reader.push(text);
-		});
-		child.on('error', (error) => {
-			if (settled) return;
-			settled = true;
-			reject(new GitError(`git clone could not start: ${error.message}`, { code: error.code, signal: null, stderr: '', args, cwd }));
-		});
-		child.on('close', (status, signal) => {
-			if (settled) return;
-			settled = true;
-			reader.flush();
-			if (status === 0) {
-				resolve({ dir });
-				return;
-			}
-			const text = stderr.join('');
-			const reason = failureReason(text, signal);
-			reject(new GitError(`git clone failed (${status === null ? signal : status}): ${reason}`, { code: status, signal, stderr: text, args, cwd }));
-		});
-	});
+async function cloneSite({ url, dir, branch = DEFAULT_BRANCH, onProgress = null, onChild = null, platform = process.platform, spawn } = {}) {
+	// The parent is the working directory: `dir` may not exist yet, and a
+	// clone is the one command whose target is an argument, not the cwd.
+	await streamGit(cloneArgs({ url, dir, branch, platform }), { cwd: path.dirname(dir), onProgress, onChild, spawn });
+	return { dir };
 }
 
 module.exports = { DEFAULT_BRANCH, cloneArgs, cloneSite };

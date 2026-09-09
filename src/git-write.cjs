@@ -2,28 +2,44 @@
 
 /**
  * The writes the bundled Git makes inside an existing repository (#385): the
- * index, a tree, a commit, a ref, a checkout. Primitives only, one Git
- * command each, with no knowledge of tickets or trunk; ticket-branches.js
- * composes them and owns the invariants. Same split as git-read.cjs, and for
- * the same reason: an argument list is testable on an injected runner, a
- * flow is testable on a real repository, and mixing the two hides which one
- * broke.
+ * index, a tree, a commit, a ref, a checkout, a fetch, a clean. Primitives
+ * only, one Git command each, with no knowledge of tickets or trunk;
+ * ticket-branches.js and trunk-update.js compose them and own the
+ * invariants. Same split as git-read.cjs, and for the same reason: an
+ * argument list is testable on an injected runner, a flow is testable on a
+ * real repository, and mixing the two hides which one broke.
  *
  * Every command that touches the index or the worktree is prefixed with
- * `windowsArgs`, what git-read.cjs gives sites the old engine made on Windows
- * (the `core.autocrlf` view and `core.longpaths`); a site the binary cloned
- * carries both in its own config, and off Windows the prefix is empty.
+ * `windowsArgs`, what git-read.cjs gives sites adopted from a host Git on
+ * Windows (the `core.autocrlf` view and `core.longpaths`); a site the binary
+ * cloned carries both in its own config, and off Windows the prefix is empty.
  *
  * Nothing here is a porcelain command with output to parse except `write-tree`
- * and `commit-tree`, which print exactly one object id; `checkout` reports its
- * progress on stderr through git-progress.cjs, the same lines the clone reads.
+ * and `commit-tree`, which print exactly one object id; `checkout` and `fetch`
+ * report their progress on stderr through `streamGit`, the same lines the
+ * clone reads.
  */
 
-const { spawnGit, runGit, GitError } = require('./git-run.cjs');
-const { windowsArgs } = require('./git-read.cjs');
-const { createProgressReader, failureReason } = require('./git-progress.cjs');
+const { runGit, streamGit, GitError } = require('./git-run.cjs');
+const { windowsArgs, resolveRef } = require('./git-read.cjs');
 
 const oidOf = ({ stdout }) => stdout.toString('utf8').trim();
+
+/**
+ * The transports a fetch may use. The URL comes from the site's own config
+ * (a site adopted from disk brought its `.git/config` with it), and Git's
+ * `ext::` transport runs a command named in that URL; `protocol.allow=never`
+ * closes that and everything else, then `https` and `http` are what
+ * wordpress-develop and any fork are reached over, and `file` is what the
+ * tests use. `ssh` stays off: it would spawn a host `ssh`, which the app
+ * has no business depending on.
+ */
+const FETCH_PROTOCOLS = [
+	'-c', 'protocol.allow=never',
+	'-c', 'protocol.https.allow=always',
+	'-c', 'protocol.http.allow=always',
+	'-c', 'protocol.file.allow=always'
+];
 
 /**
  * Stages exactly `paths`: modifications and additions are added, deletions
@@ -161,52 +177,92 @@ async function deleteBranch(dir, ref, { run = runGit } = {}) {
 async function checkoutBranch(dir, ref, { onProgress = null, onChild = null, platform = process.platform, run = runGit, spawn } = {}) {
 	const win = await windowsArgs(dir, { platform, run });
 	// No `--` before the ref: after it, checkout reads a pathspec, not a branch.
-	const args = [...win, 'checkout', '--force', '--progress', ref];
-	return new Promise((resolve, reject) => {
-		let child;
-		try {
-			child = spawnGit(args, { cwd: dir, ...(spawn ? { spawn } : {}) });
-		} catch (error) {
-			reject(error);
-			return;
-		}
-		if (onChild) onChild(child);
+	await streamGit([...win, 'checkout', '--force', '--progress', ref], { cwd: dir, onProgress, onChild, spawn });
+	return { ref };
+}
 
-		const reader = createProgressReader((event) => { if (onProgress) onProgress(event); });
-		const stderr = [];
-		let settled = false;
-		child.stdout.on('data', () => {});
-		child.stderr.on('data', (chunk) => {
-			const text = chunk.toString('utf8');
-			stderr.push(text);
-			reader.push(text);
-		});
-		child.on('error', (error) => {
-			if (settled) return;
-			settled = true;
-			reject(new GitError(`git checkout could not start: ${error.message}`, { code: error.code, signal: null, stderr: '', args, cwd: dir }));
-		});
-		child.on('close', (status, signal) => {
-			if (settled) return;
-			settled = true;
-			reader.flush();
-			if (status === 0) {
-				resolve({ ref });
-				return;
-			}
-			const text = stderr.join('');
-			reject(new GitError(`git checkout failed (${status === null ? signal : status}): ${failureReason(text, signal)}`, { code: status, signal, stderr: text, args, cwd: dir }));
-		});
+/**
+ * Fetches one branch from one remote and resolves with the commit it now
+ * points at, read back from `FETCH_HEAD`. No `--depth` and no `--filter`: a
+ * site the app made carries `remote.origin.promisor` in its own config, so
+ * the fetch is partial by itself, and a full clone adopted from disk fetches
+ * the way its owner's Git would. `--no-tags` keeps wordpress-develop's tags
+ * (one per release) off a site that never needs them. Only `https`, `http`
+ * and `file` are allowed as transports (`FETCH_PROTOCOLS`).
+ *
+ * Git's progress goes to `onStderr` as it is printed, `remote: Counting
+ * objects` and `Receiving objects` included, because those lines are already
+ * what a terminal should show; `onProgress` gets the parsed events for a
+ * caller that wants a number.
+ *
+ * @param {string}   dir
+ * @param {string}   remote
+ * @param {string}   branch
+ * @param {Object}   [options]
+ * @param {Function} [options.onStderr]
+ * @param {Function} [options.onProgress]
+ * @param {Function} [options.onChild]    Handed the ChildProcess.
+ * @param {Function} [options.spawn]      Injection point for tests.
+ * @param {Function} [options.resolve]    Injection point for tests: reads FETCH_HEAD.
+ * @return {Promise<{oid: string}>}
+ */
+async function fetchBranch(dir, remote, branch, { onStderr = null, onProgress = null, onChild = null, spawn, resolve = resolveRef } = {}) {
+	await streamGit([...FETCH_PROTOCOLS, 'fetch', '--progress', '--no-tags', '--', remote, branch], { cwd: dir, onStderr, onProgress, onChild, spawn });
+	const oid = await resolve(dir, 'FETCH_HEAD');
+	if (!oid) throw new GitError(`git fetch left no FETCH_HEAD for ${remote} ${branch}`, { code: 'no-fetch-head', signal: null, stderr: '', args: ['fetch', remote, branch], cwd: dir });
+	return { oid };
+}
+
+/**
+ * Takes exactly `paths` out of the index, leaving the files on disk: what
+ * `reset` with a pathspec does, and the counterpart of `stagePaths`, fed the
+ * same way (NUL-separated on stdin, literal). A path absent from HEAD is
+ * simply dropped from the index; one present in HEAD goes back to HEAD's
+ * entry. `rm --cached` would refuse a path whose staged content matches
+ * neither HEAD nor the worktree, which is not a refusal anyone here wants.
+ *
+ * @param {string}   dir
+ * @param {string[]} paths
+ * @param {Object}   [options]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]
+ * @return {Promise<number>} How many paths were handed to Git.
+ */
+async function unstagePaths(dir, paths, { platform = process.platform, run = runGit } = {}) {
+	if (!paths.length) return 0;
+	const win = await windowsArgs(dir, { platform, run });
+	await run([...win, '--literal-pathspecs', 'reset', '-q', '--pathspec-from-file=-', '--pathspec-file-nul', '--'], {
+		cwd: dir,
+		input: Buffer.from(`${paths.join('\0')}\0`, 'utf8')
 	});
+	return paths.length;
+}
+
+/**
+ * Removes every untracked file and directory that is not ignored. Without
+ * `-x`, what `.gitignore` and `.git/info/exclude` name stays (`node_modules`,
+ * `build`); without a second `-f`, a nested repository stays too.
+ *
+ * @param {string}   dir
+ * @param {Object}   [options]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]
+ */
+async function cleanUntracked(dir, { platform = process.platform, run = runGit } = {}) {
+	const win = await windowsArgs(dir, { platform, run });
+	await run([...win, 'clean', '-fd'], { cwd: dir });
 }
 
 module.exports = {
 	stagePaths,
+	unstagePaths,
 	writeTree,
 	commitTree,
 	updateBranch,
 	createBranchAt,
 	pointHeadAt,
 	deleteBranch,
-	checkoutBranch
+	checkoutBranch,
+	fetchBranch,
+	cleanUntracked
 };

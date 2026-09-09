@@ -9,8 +9,8 @@
  * `spawn`, not `execFile`: execFile buffers stdout against a `maxBuffer` and
  * kills the child silently when it overflows, and it hides the ChildProcess
  * that a cancellation needs. Here the cap is explicit, the overflow is an
- * error the caller sees, and `spawnGit` returns the child so a later phase can
- * stream a clone's progress and hand it to `killChildTree`.
+ * error the caller sees, and `spawnGit` returns the child so `streamGit` can
+ * read a clone's progress as it happens and hand the child to `killChildTree`.
  *
  * Two global options ride on every call:
  *
@@ -26,6 +26,7 @@
 const { spawn: nodeSpawn } = require('child_process');
 const { resolveGitBinary, buildGitEnv, BASE_ARGS, SPAWN_OPTIONS } = require('./git-binary.cjs');
 const { killChildTree } = require('./kill-tree.js');
+const { createProgressReader, failureReason } = require('./git-progress.cjs');
 
 /**
  * Enough for any porcelain output the app asks for: `status -z` on a tree with
@@ -185,4 +186,70 @@ function runGit(args, { okCodes = [0], maxStdout = DEFAULT_MAX_STDOUT, ...spawnO
 	});
 }
 
-module.exports = { spawnGit, runGit, GitError, DEFAULT_MAX_STDOUT, subcommandOf, safeDirectoryArgs };
+/**
+ * Runs Git to completion while its stderr is read as it arrives: the shape
+ * of a clone, a checkout and a fetch, the commands that take long enough to
+ * report progress and that a quit may have to kill. `onProgress` receives
+ * the parsed `{ phase, percent, loaded, total }` events (git-progress.cjs);
+ * `onStderr` receives each raw chunk, for a caller that shows Git's own
+ * lines; `onChild` receives the ChildProcess as soon as it exists, so it can
+ * be handed to `killChildTree`. Stdout is drained and dropped: none of these
+ * commands prints anything there that the app reads.
+ *
+ * Resolves with `{ stderr }` on exit 0 and rejects with a GitError otherwise,
+ * its message carrying `failureReason`, Git's last `fatal:` or `error:` line,
+ * rather than the first line of stderr the way `runGit` does: after a screen
+ * of progress the reason is at the end.
+ *
+ * @param {string[]} args
+ * @param {Object}   options
+ * @param {string}   options.cwd
+ * @param {Function} [options.onProgress]
+ * @param {Function} [options.onStderr]
+ * @param {Function} [options.onChild]
+ * @param {Object}   [options.extraEnv]
+ * @param {Function} [options.spawn]      Injection point for tests.
+ * @return {Promise<{stderr: string}>}
+ */
+function streamGit(args, { cwd, onProgress = null, onStderr = null, onChild = null, extraEnv, spawn } = {}) {
+	return new Promise((resolve, reject) => {
+		let child;
+		try {
+			child = spawnGit(args, { cwd, extraEnv, ...(spawn ? { spawn } : {}) });
+		} catch (error) {
+			reject(error);
+			return;
+		}
+		if (onChild) onChild(child);
+
+		const name = subcommandOf(args);
+		const reader = createProgressReader((event) => { if (onProgress) onProgress(event); });
+		const stderr = [];
+		let settled = false;
+		child.stdout.on('data', () => {});
+		child.stderr.on('data', (chunk) => {
+			const text = chunk.toString('utf8');
+			stderr.push(text);
+			reader.push(text);
+			if (onStderr) onStderr(text);
+		});
+		child.on('error', (error) => {
+			if (settled) return;
+			settled = true;
+			reject(new GitError(`git ${name} could not start: ${error.message}`, { code: error.code, signal: null, stderr: '', args, cwd }));
+		});
+		child.on('close', (status, signal) => {
+			if (settled) return;
+			settled = true;
+			reader.flush();
+			const text = stderr.join('');
+			if (status === 0) {
+				resolve({ stderr: text });
+				return;
+			}
+			reject(new GitError(`git ${name} failed (${status === null ? signal : status}): ${failureReason(text, signal)}`, { code: status, signal, stderr: text, args, cwd }));
+		});
+	});
+}
+
+module.exports = { spawnGit, runGit, streamGit, GitError, DEFAULT_MAX_STDOUT, subcommandOf, safeDirectoryArgs };

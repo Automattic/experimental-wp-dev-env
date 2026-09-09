@@ -33,7 +33,7 @@ const { fetchLinkedPrs, fetchPrDiff } = require('./github-prs');
 const { getClientId: getGithubClientId, requestDeviceCode, pollForToken, fetchViewer } = require('./github-auth.cjs');
 const { openPullRequest, buildPullRequestBody, testMode: githubTestMode } = require('./github-pr.cjs');
 const { buildPullRequestEntries } = require('./pr-files.cjs');
-const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite } = require('./git-read.cjs');
+const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite, remoteUrl } = require('./git-read.cjs');
 const { cloneSite } = require('./git-clone.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
 const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
@@ -1095,10 +1095,10 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
  * was a new site rather than a migration. Same shape as `midSwitchBlock`, so
  * the handlers and the renderer treat both refusals alike. Delete, the patch
  * export and opening a pull request are deliberately not behind it: they are
- * how the work leaves, and none of them touches the checkout. Two writes
- * outside the checkout still reach such a site on purpose: `site:status`
- * keeps `.git/info/exclude` current, and the export's `ensureAutocrlf` may
- * write `core.autocrlf` on Windows until the patch flow moves (#385).
+ * how the work leaves, and none of them touches the checkout. One write
+ * outside the checkout still reaches such a site on purpose: `site:status`
+ * keeps `.git/info/exclude` current. (`ensureAutocrlf`, which the export
+ * still calls, is an in-memory view for isomorphic-git and writes nothing.)
  *
  * The export covers the branch that is checked out. Work parked on another
  * ticket's branch needs a switch to reach, and the switch is refused, so it
@@ -1106,6 +1106,25 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
  *
  * @param {string} sitePath
  */
+const NO_ORIGIN_ERROR = 'This site has no origin remote to fetch from, so it cannot be updated. Add one from a terminal (git remote add origin <url>) or create a new site.';
+
+/**
+ * The update fetches from the checkout's own `origin` (#359), which every
+ * site the app clones has and a site added from disk may not. Told before
+ * the fetch, with the app's sentence, rather than by Git's stderr after the
+ * ticket was parked. Same shape as the other two blocks.
+ *
+ * @param {string} sitePath
+ */
+async function noOriginBlock(sitePath) {
+    let url = null;
+    // A read that fails is not an answer: the fetch that follows reports its
+    // own reason, the way a status read that fails reports `legacy: false`.
+    try { url = await remoteUrl(sitePath, 'origin'); } catch { return null; }
+    if (url) return null;
+    return { ok: false, code: 'no-origin', error: NO_ORIGIN_ERROR };
+}
+
 async function legacySiteBlock(sitePath) {
     if (!await isLegacySite(sitePath)) return null;
     return { ok: false, code: 'legacy-site', error: LEGACY_SITE_ERROR };
@@ -1372,9 +1391,9 @@ ipcMain.handle('git:discard-to-base', async (_e, sitePath) => {
         if (legacy) return legacy;
         const baseOid = await patchBaseOid(sitePath);
         if (baseOid) {
-            await discardToBase(sitePath, baseOid);
+            await discardToBase(sitePath, baseOid, { onChild: trackGitChild(sitePath) });
         } else {
-            await discardChanges(sitePath);
+            await discardChanges(sitePath, { onChild: trackGitChild(sitePath) });
         }
         await writeWorkMeta(sitePath, { appliedPatch: null });
         let files = null;
@@ -1391,7 +1410,7 @@ ipcMain.handle('git:discard-changes', async (_e, sitePath) => {
     try {
         const legacy = await legacySiteBlock(sitePath);
         if (legacy) return legacy;
-        await discardChanges(sitePath);
+        await discardChanges(sitePath, { onChild: trackGitChild(sitePath) });
         // Clearing the applied-patch record belongs with the reset that removed
         // the patch from the tree — not with the trunk update that may follow and
         // fail on the network, which would leave a revert banner for a patch that
@@ -1433,7 +1452,7 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
         try {
             // The update rewrites `trunk` and checks it out, so it has to run
             // from trunk (#108). Park the ticket first, and return to it after.
-            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath);
+            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath) || await noOriginBlock(sitePath);
             if (blocked) { sendLog(`\n${blocked.error}\n`); sendDone(blocked); return; }
 
             const active = await activeBranch(sitePath, { migrate: true });
@@ -1462,7 +1481,7 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
                 await mergeSiteMeta(sitePath, { currentBranch: TRUNK });
             }
 
-            const result = await updateToLatestTrunk({ dir: sitePath, url: WORDPRESS_GIT_URL, onLog: sendLog });
+            const result = await updateToLatestTrunk({ dir: sitePath, onLog: sendLog, onChild: trackGitChild(sitePath) });
             // An update resets the worktree, so any applied patch is gone with
             // it either way — clear the record so the "applied" banner does not
             // outlive the patch. (This is also where a discard's cleanup lands:

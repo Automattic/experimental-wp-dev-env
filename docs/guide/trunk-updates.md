@@ -12,6 +12,8 @@ The header of each site shows which snapshot it currently holds — for example 
 
 This option is always there — on every site, at any time, no matter how old or new the snapshot is and whether or not the app has flagged it as stale. If nothing has moved, you simply get "Already up to date." in the terminal.
 
+The update fetches from the site's own `origin` remote. A site the app created points at `WordPress/wordpress-develop`; a site you added from an existing checkout of a fork keeps fetching from that fork. A checkout with no `origin` remote cannot be updated; the terminal says so and how to add one.
+
 You no longer have to stop the dev server first. The update pauses the [build watch](./running-the-site#the-build-watch) for the rebuild and resumes it afterwards, and the PHP server keeps serving throughout.
 
 What it will not run alongside is another install or build. The **Update to latest trunk** button in the staleness notice is disabled while one is running — but the ☰ menu entry is not, and clicking it in that state simply does nothing, with no message to say why.

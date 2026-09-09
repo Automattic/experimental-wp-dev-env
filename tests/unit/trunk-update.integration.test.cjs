@@ -23,10 +23,15 @@ const {
 
 const AUTHOR = { name: 'test', email: 'test@example.com' };
 
-async function makeRepo(t) {
+// The shape the clone writes (git-clone.cjs): with core.autocrlf pinned the
+// binary's checkout writes LF on Windows too, so the byte-for-byte assertions
+// on the discards mean the same on every platform. The CRLF-view tests below
+// are about a repository that has no such value, and ask for one.
+async function makeRepo(t, { autocrlfUnset = false } = {}) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trunk-update-test-'));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	if (!autocrlfUnset) await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\nline2\n');
 	// Big5-style bytes: not valid UTF-8, the encoding-fixture case.
 	fs.writeFileSync(path.join(dir, 'big5.txt'), Buffer.from([0xa4, 0xa4, 0x0a, 0xa4, 0xe5, 0x0a]));
@@ -50,7 +55,7 @@ test('collectDirtyFiles: CRLF-smudged files, UTF-8 or not, are not dirty (issue 
 
 for (const platform of ['darwin', 'linux']) {
 	test(`CRLF compatibility: ${platform} leaves an unset local core.autocrlf untouched (issue #341)`, async (t) => {
-		const dir = await makeRepo(t);
+		const dir = await makeRepo(t, { autocrlfUnset: true });
 		const compatibleFs = createCrlfCompatibleFs(dir, { platform });
 
 		assert.strictEqual(await git.getConfig({ fs: compatibleFs, dir, path: 'core.autocrlf' }), undefined);
@@ -60,7 +65,7 @@ for (const platform of ['darwin', 'linux']) {
 
 for (const value of [undefined, 'true', 'false', 'input']) {
 	test(`CRLF compatibility: Windows preserves local core.autocrlf=${value ?? 'unset'} (issue #341)`, async (t) => {
-		const dir = await makeRepo(t);
+		const dir = await makeRepo(t, { autocrlfUnset: true });
 		if (value !== undefined) {
 			await git.setConfig({ fs, dir, path: 'core.autocrlf', value });
 		}
@@ -74,7 +79,7 @@ for (const value of [undefined, 'true', 'false', 'input']) {
 }
 
 test('CRLF compatibility: Windows normalizes a CRLF checkout without persisting config (issue #341)', async (t) => {
-	const dir = await makeRepo(t);
+	const dir = await makeRepo(t, { autocrlfUnset: true });
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\r\nline2\r\n');
 	const compatibleFs = createCrlfCompatibleFs(dir, { platform: 'win32' });
 
@@ -85,7 +90,7 @@ test('CRLF compatibility: Windows normalizes a CRLF checkout without persisting 
 });
 
 test('CRLF compatibility: a worktree file named config is not altered in memory (issue #341)', async (t) => {
-	const dir = await makeRepo(t);
+	const dir = await makeRepo(t, { autocrlfUnset: true });
 	fs.writeFileSync(path.join(dir, 'config'), 'ordinary worktree content\n');
 	const compatibleFs = createCrlfCompatibleFs(dir, { platform: 'win32' });
 
@@ -114,7 +119,7 @@ test('CRLF compatibility: a gitdir file receives the same non-persistent view (i
 });
 
 test('CRLF compatibility: config read failures are logged and remain failures (issue #341)', async (t) => {
-	const dir = await makeRepo(t);
+	const dir = await makeRepo(t, { autocrlfUnset: true });
 	const errors = [];
 	const failingFs = Object.create(fs);
 	const promises = Object.create(fs.promises);
@@ -259,4 +264,45 @@ test('discardChanges: stays on the ticket branch and keeps its parked work (issu
 	assert.strictEqual(await git.currentBranch({ fs, dir, fullname: false }), 'ticket/59234');
 	assert.strictEqual(fs.readFileSync(path.join(dir, 'text.txt'), 'utf8'), 'parked work\n');
 	assert.strictEqual(fs.existsSync(path.join(dir, 'untracked.txt')), false);
+});
+
+// What a discard must leave alone: the substrate `.gitignore` names and what
+// `.git/info/exclude` names (the app writes the latter for its own files).
+// `clean` without `-x` is the whole of that promise.
+test('discardChanges: ignored and excluded files survive, staged and untracked ones do not (issue #385)', async (t) => {
+	const dir = await makeRepo(t);
+	fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
+	await git.add({ fs, dir, filepath: '.gitignore' });
+	await git.commit({ fs, dir, message: 'ignore', author: AUTHOR });
+	fs.mkdirSync(path.join(dir, 'node_modules', 'dep'), { recursive: true });
+	fs.writeFileSync(path.join(dir, 'node_modules', 'dep', 'index.js'), 'installed\n');
+	fs.writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'excluded.txt\n');
+	fs.writeFileSync(path.join(dir, 'excluded.txt'), 'mine\n');
+	fs.mkdirSync(path.join(dir, 'new-dir'));
+	fs.writeFileSync(path.join(dir, 'new-dir', 'file.txt'), 'new\n');
+	fs.writeFileSync(path.join(dir, 'staged.txt'), 'staged\n');
+	await git.add({ fs, dir, filepath: 'staged.txt' });
+	fs.appendFileSync(path.join(dir, 'text.txt'), 'edit\n');
+	const children = [];
+
+	await discardChanges(dir, { onChild: (child) => children.push(child) });
+
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'node_modules', 'dep', 'index.js'), 'utf8'), 'installed\n');
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'excluded.txt'), 'utf8'), 'mine\n');
+	assert.strictEqual(fs.existsSync(path.join(dir, 'new-dir')), false);
+	assert.strictEqual(fs.existsSync(path.join(dir, 'staged.txt')), false);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'text.txt'), 'utf8'), 'line1\nline2\n');
+	assert.deepStrictEqual(await collectDirtyFiles(dir), []);
+	assert.strictEqual(children.length, 1, 'the checkout child was handed out');
+});
+
+test('discardToBase: a base this repository does not have does not rewind the branch (issue #385)', async (t) => {
+	const dir = await makeRepo(t);
+	const head = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+	fs.appendFileSync(path.join(dir, 'text.txt'), 'scribble\n');
+
+	await discardToBase(dir, '0000000000000000000000000000000000000001');
+
+	assert.strictEqual(await git.resolveRef({ fs, dir, ref: 'HEAD' }), head);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'text.txt'), 'utf8'), 'line1\nline2\n');
 });

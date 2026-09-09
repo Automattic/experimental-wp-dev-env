@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { stagePaths, writeTree, commitTree, updateBranch, createBranchAt, pointHeadAt, deleteBranch, checkoutBranch } = require('../../src/git-write.cjs');
+const { stagePaths, unstagePaths, writeTree, commitTree, updateBranch, createBranchAt, pointHeadAt, deleteBranch, checkoutBranch, fetchBranch, cleanUntracked } = require('../../src/git-write.cjs');
+const { pathToFileURL } = require('node:url');
 const { git, tempDir } = require('./helpers/git.cjs');
 
 // The primitives against the real binary: the argument tests prove what is
@@ -121,4 +122,50 @@ test('a checkout of a ref that does not exist rejects with Git\'s reason', async
 		assert.match(e.message, /^git checkout failed \(1\): error: pathspec 'ticket\/404'/);
 		return true;
 	});
+});
+
+test('unstagePaths takes a staged file out of the index and leaves it on disk; cleanUntracked then removes only what is untracked and not ignored', async (t) => {
+	const { dir } = makeRepo(t);
+	fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
+	fs.writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'excluded.txt\n');
+	git(['add', '.gitignore'], dir);
+	git([...IDENTITY, 'commit', '-q', '-m', 'ignore'], dir);
+	fs.mkdirSync(path.join(dir, 'node_modules'));
+	fs.writeFileSync(path.join(dir, 'node_modules', 'expensive.js'), 'expensive\n');
+	fs.writeFileSync(path.join(dir, 'excluded.txt'), 'excluded\n');
+	fs.writeFileSync(path.join(dir, 'staged.txt'), 'staged\n');
+	fs.writeFileSync(path.join(dir, 'loose.txt'), 'loose\n');
+	fs.mkdirSync(path.join(dir, 'loose-dir'));
+	fs.writeFileSync(path.join(dir, 'loose-dir', 'file.txt'), 'loose\n');
+	git(['add', '--', 'staged.txt'], dir);
+
+	assert.equal(await unstagePaths(dir, ['staged.txt']), 1);
+	assert.equal(fs.readFileSync(path.join(dir, 'staged.txt'), 'utf8'), 'staged\n', 'the file stayed on disk');
+	assert.match(git(['status', '--porcelain=v2', '-z'], dir).stdout, /\? staged\.txt/, 'and is untracked now');
+
+	await cleanUntracked(dir);
+	assert.equal(fs.existsSync(path.join(dir, 'staged.txt')), false);
+	assert.equal(fs.existsSync(path.join(dir, 'loose.txt')), false);
+	assert.equal(fs.existsSync(path.join(dir, 'loose-dir')), false);
+	assert.equal(fs.readFileSync(path.join(dir, 'node_modules', 'expensive.js'), 'utf8'), 'expensive\n', 'ignored survives');
+	assert.equal(fs.readFileSync(path.join(dir, 'excluded.txt'), 'utf8'), 'excluded\n', 'excluded survives');
+});
+
+test('fetchBranch brings one branch down from a file:// remote and answers with its tip', async (t) => {
+	const { dir: origin } = makeRepo(t);
+	const { dir } = makeRepo(t);
+	git(['remote', 'add', 'origin', pathToFileURL(origin).href], dir);
+	git(['tag', 'v1'], origin);
+	fs.writeFileSync(path.join(origin, 'kept.txt'), 'moved on\n');
+	git([...IDENTITY, 'commit', '-q', '-am', 'second'], origin);
+	const tip = git(['rev-parse', 'HEAD'], origin).stdout;
+	const lines = [];
+
+	const { oid } = await fetchBranch(dir, 'origin', 'trunk', { onStderr: (t2) => lines.push(t2) });
+
+	assert.equal(oid, tip);
+	assert.equal(git(['rev-parse', 'FETCH_HEAD'], dir).stdout, tip);
+	assert.equal(git(['tag', '--list'], dir).stdout, '', 'no tags came along');
+	assert.match(lines.join(''), /-> FETCH_HEAD/);
+	assert.equal(fs.readFileSync(path.join(dir, 'kept.txt'), 'utf8'), 'kept\n', 'a fetch touches no worktree');
 });

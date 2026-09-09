@@ -17,7 +17,9 @@
 const fs = require( 'node:fs' );
 const os = require( 'node:os' );
 const path = require( 'node:path' );
+const { pathToFileURL } = require( 'node:url' );
 const git = require( 'isomorphic-git' );
+const { git: gitBinary } = require( '../../unit/helpers/git.cjs' );
 
 const TRUNK = 'trunk';
 const AUTHOR = { name: 'e2e', email: 'e2e@example.test' };
@@ -68,9 +70,10 @@ const TRUNK_FILES = {
  * @param {Object}  [options]
  * @param {string}  [options.label]  The name shown in the sidebar.
  * @param {boolean} [options.legacy] Shape the repository the way the old engine's shallow clone did (#385).
- * @return {Promise<{dir: string, baseOid: string, settings: Object}>}
+ * @param {boolean} [options.origin] Give the site an `origin` it can fetch from: a clone of it on disk (#385).
+ * @return {Promise<{dir: string, baseOid: string, origin: ?string, settings: Object}>}
  */
-async function makeSite( session, { label = 'e2e-site', legacy = false } = {} ) {
+async function makeSite( session, { label = 'e2e-site', legacy = false, origin = false } = {} ) {
 	const dir = session.track( fs.mkdtempSync( path.join( os.tmpdir(), 'wpct-e2e-site-' ) ) );
 
 	await git.init( { fs, dir, defaultBranch: TRUNK } );
@@ -94,6 +97,17 @@ async function makeSite( session, { label = 'e2e-site', legacy = false } = {} ) 
 		await git.addRemote( { fs, dir, remote: 'origin', url: 'https://example.test/wordpress-develop.git' } );
 	}
 
+	// Where "Update to latest trunk" fetches from (#385): a clone of the site
+	// beside it, reached over `file://`, that a journey moves ahead with
+	// `advanceOrigin`. A working clone rather than a bare one so the journey
+	// can commit into it with the same binary the app ships.
+	let originDir = null;
+	if ( origin ) {
+		originDir = session.track( fs.mkdtempSync( path.join( os.tmpdir(), 'wpct-e2e-origin-' ) ) );
+		run( [ 'clone', '-q', '--config', 'core.autocrlf=false', '--', dir, originDir ], path.dirname( originDir ) );
+		run( [ 'remote', 'add', 'origin', pathToFileURL( originDir ).href ], dir );
+	}
+
 	fs.mkdirSync( path.join( dir, 'node_modules', 'react' ), { recursive: true } );
 	fs.writeFileSync( path.join( dir, SUBSTRATE ), SUBSTRATE_CONTENT );
 
@@ -102,7 +116,41 @@ async function makeSite( session, { label = 'e2e-site', legacy = false } = {} ) 
 	// what is checked, not its contents.
 	fs.mkdirSync( path.join( dir, 'build', 'wp-includes', 'js', 'dist' ), { recursive: true } );
 
-	return { dir, baseOid, settings: settingsFor( dir, label ) };
+	return { dir, baseOid, origin: originDir, settings: settingsFor( dir, label ) };
+}
+
+/**
+ * Runs the bundled Git in a fixture directory and fails loudly if it does.
+ *
+ * @param {string[]} args
+ * @param {string}   cwd
+ * @return {string} Trimmed stdout.
+ */
+function run( args, cwd ) {
+	const result = gitBinary( args, cwd );
+	if ( result.status !== 0 ) {
+		throw new Error( `git ${ args.join( ' ' ) } failed (${ result.status }): ${ result.stderr }` );
+	}
+	return result.stdout;
+}
+
+/**
+ * Commits new content into the site's origin, so the next update has
+ * something to fetch. Returns the new tip.
+ *
+ * @param {string}                 origin    The directory `makeSite` returned as `origin`.
+ * @param {Object<string, string>} files     Path → content, relative to the repository.
+ * @param {string}                 [message]
+ * @return {string} The commit id trunk now points at in the origin.
+ */
+function advanceOrigin( origin, files, message = 'trunk moves on' ) {
+	for ( const [ file, content ] of Object.entries( files ) ) {
+		fs.mkdirSync( path.dirname( path.join( origin, file ) ), { recursive: true } );
+		fs.writeFileSync( path.join( origin, file ), content );
+	}
+	run( [ 'add', '-A', '--', ...Object.keys( files ) ], origin );
+	run( [ '-c', `user.name=${ AUTHOR.name }`, '-c', `user.email=${ AUTHOR.email }`, 'commit', '-q', '-m', message ], origin );
+	return run( [ 'rev-parse', 'HEAD' ], origin );
 }
 
 /**
@@ -200,6 +248,7 @@ function makePatchFile( session, name, hunks ) {
 
 module.exports = {
 	makeSite,
+	advanceOrigin,
 	makePatchFile,
 	settingsFor,
 	read,

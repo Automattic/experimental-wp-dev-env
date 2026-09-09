@@ -141,3 +141,16 @@ test('isLegacySite: shallow without a promisor is the old engine, anything else 
 	assert.equal(git(['config', '--local', 'remote.origin.promisor', 'true'], dir).status, 0);
 	assert.equal(await read.isLegacySite(dir), false);
 });
+
+test('isAncestor: the branch point is an ancestor of the tip, not the other way round, and an unknown oid rejects (#385)', async (t) => {
+	const dir = makeRepo(t);
+	const base = git(['rev-parse', 'HEAD'], dir).stdout;
+	fs.writeFileSync(path.join(dir, 'with space.txt'), 'changed\n');
+	assert.equal(git(['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-am', 'second'], dir).status, 0);
+	const tip = git(['rev-parse', 'HEAD'], dir).stdout;
+
+	assert.equal(await read.isAncestor(dir, base, tip), true);
+	assert.equal(await read.isAncestor(dir, tip, base), false);
+	assert.equal(await read.isAncestor(dir, tip, tip), true, 'a commit is its own ancestor');
+	await assert.rejects(read.isAncestor(dir, '0000000000000000000000000000000000000001', tip), (error) => error.code === 128);
+});

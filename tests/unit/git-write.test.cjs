@@ -11,7 +11,10 @@ const {
 	createBranchAt,
 	pointHeadAt,
 	deleteBranch,
-	checkoutBranch
+	checkoutBranch,
+	fetchBranch,
+	unstagePaths,
+	cleanUntracked
 } = require('../../src/git-write.cjs');
 
 // The argument lists, without a Git: `run` and `spawn` are injected and record
@@ -193,4 +196,63 @@ test('a checkout whose Git never started rejects the same way', async () => {
 		checkoutBranch('/sites/wp', 'ticket/1', { platform: 'darwin', run, spawn }),
 		(error) => error.name === 'GitError' && error.code === 'ENOENT'
 	);
+});
+
+test('fetchBranch asks for one branch of one remote with progress, no depth and no filter, and reads FETCH_HEAD back', async () => {
+	const { spawn, calls } = recordingSpawn({ stderr: ['Receiving objects: 100% (4/4), done.\n'] });
+	const chunks = [];
+	let child = null;
+
+	const result = await fetchBranch('/sites/wp', 'origin', 'trunk', {
+		spawn, onStderr: (t) => chunks.push(t), onChild: (c) => { child = c; },
+		resolve: async (dir, ref) => { assert.equal(dir, '/sites/wp'); assert.equal(ref, 'FETCH_HEAD'); return 'new1'; }
+	});
+
+	assert.deepEqual(result, { oid: 'new1' });
+	const { args, options } = calls[0];
+	assert.deepEqual(args.slice(-6), ['fetch', '--progress', '--no-tags', '--', 'origin', 'trunk']);
+	// The URL is the site's own config, so `ext::` and friends are closed
+	// before it is read; what the app fetches over stays open.
+	const protocols = args.filter((a, i) => args[i - 1] === '-c' && a.startsWith('protocol.'));
+	assert.deepEqual(protocols, ['protocol.allow=never', 'protocol.https.allow=always', 'protocol.http.allow=always', 'protocol.file.allow=always']);
+	assert.ok(!args.some((a) => /^--depth|^--filter|^--unshallow/.test(a)), 'the site config decides how much comes down');
+	assert.ok(!args.includes('core.autocrlf=true') && !args.includes('core.longpaths=true'), 'a fetch touches no worktree');
+	assert.equal(options.cwd, '/sites/wp');
+	assert.equal(child.pid, 4242);
+	assert.deepEqual(chunks, ['Receiving objects: 100% (4/4), done.\n']);
+});
+
+test('fetchBranch with nothing in FETCH_HEAD afterwards is an error, not an undefined oid', async () => {
+	const { spawn } = recordingSpawn();
+	await assert.rejects(
+		fetchBranch('/sites/wp', 'origin', 'trunk', { spawn, resolve: async () => null }),
+		(error) => error.name === 'GitError' && error.code === 'no-fetch-head'
+	);
+});
+
+test('unstagePaths hands Git exactly the paths on stdin, literally, through reset rather than rm --cached, and runs nothing for none', async () => {
+	const { run, calls, last } = recordingRun();
+
+	assert.equal(await unstagePaths('/sites/wp', ['node_modules/dep/index.js', 'weird[1].txt'], { platform: 'darwin', run }), 2);
+	assert.deepEqual(last().args, ['--literal-pathspecs', 'reset', '-q', '--pathspec-from-file=-', '--pathspec-file-nul', '--']);
+	assert.equal(last().options.input.toString('utf8'), 'node_modules/dep/index.js\0weird[1].txt\0');
+
+	calls.length = 0;
+	assert.equal(await unstagePaths('/sites/wp', [], { platform: 'darwin', run }), 0);
+	assert.deepEqual(calls, []);
+});
+
+test('cleanUntracked removes untracked files and directories but never what is ignored, and both index commands get the Windows prefix', async () => {
+	const { run, calls } = recordingRun();
+
+	await cleanUntracked('/sites/wp', { platform: 'darwin', run });
+	assert.deepEqual(calls[calls.length - 1].args, ['clean', '-fd']);
+	assert.ok(!calls[calls.length - 1].args.includes('-x') && !calls[calls.length - 1].args.includes('-ffd'));
+
+	calls.length = 0;
+	await cleanUntracked('C:\\Sites\\wp', { platform: 'win32', run });
+	await unstagePaths('C:\\Sites\\wp', ['a.php'], { platform: 'win32', run });
+	for (const { args } of calls.filter((c) => c.args[0] !== 'config')) {
+		assert.deepEqual(args.slice(0, 4), ['-c', 'core.autocrlf=true', '-c', 'core.longpaths=true'], args.join(' '));
+	}
 });
