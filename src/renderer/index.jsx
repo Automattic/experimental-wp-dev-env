@@ -20,6 +20,15 @@ import {
 } from '@wordpress/components';
 import { plus, chevronLeft, chevronRight, chevronDown, copy as copyIcon, check as checkIcon, edit, download, comment } from '@wordpress/icons';
 import '@wordpress/components/build-style/style.css';
+// After the @wordpress/components stylesheet, deliberately: esbuild concatenates
+// CSS imports in import order, so this is what lets the app's own tokens win
+// against it without any build configuration. xterm's stylesheet is imported
+// after these, which is harmless — it only selects inside .xterm.
+import './styles/tokens.css';
+import { Section } from './ui/Section.jsx';
+import { ActionRow } from './ui/ActionRow.jsx';
+import { MetaText } from './ui/MetaText.jsx';
+import { StatusBadge } from './ui/StatusBadge.jsx';
 import { Terminal } from 'xterm';
 import 'xterm/css/xterm.css';
 import { computeSetupStepState, setupStepStatuses, setupStepCopy, setupAutoStartDecision, setupStepLabel } from './setup-steps.cjs';
@@ -868,7 +877,12 @@ function App() {
       </div>
       <div style={{ flex: 1, background: '#fff', color: '#1d2327', display: 'flex', flexDirection: 'column' }}>
         <div style={{ flex: 1, overflowY: 'auto', padding: '32px 32px 48px' }}>
-          <div style={{ maxWidth: 1040, margin: '0 auto' }}>
+          {/* The measure was already capped, at a hand-picked 1040px. It now
+              reads from --wpct-content-max-width so the whole window agrees on
+              one line length, and it is narrower: 1040px is wide enough that
+              the eye loses the left spine travelling back from the end of a
+              meta line. */}
+          <div className="wpct-content-column">
             {webAvailable ? (
               <Flex align="center" justify="flex-end" style={{ gap: 8, marginBottom: 24 }}>
                 <Button
@@ -3954,10 +3968,6 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
     }
   };
 
-  const statusStyles = initialized
-    ? { background: '#e7f6e7', color: '#0f5132' }
-    : { background: '#fff4ce', color: '#8a6d1c' };
-
   // Colours and indicator per step status. The status *word* is not here — it
   // lives in `setupStepLabel`, the one place that distinguishes a step that is
   // merely next from one that is running (#257).
@@ -4135,7 +4145,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   });
 
   return (
-    <section ref={nextActionSectionRef} style={{ display: 'flex', flexDirection: 'column', gap: 24, paddingBottom: 48 }}>
+    <section ref={nextActionSectionRef} className="wpct-site-page">
       {/* The glow on the next-action block is purely visual, invisible to a
           screen reader. This is its spoken equivalent: a polite live region that
           names the next step as the cue moves, so a non-sighted contributor gets
@@ -4147,42 +4157,73 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       <div className="sr-only" role="status" aria-live="polite">
         {isActive && nextAction ? `Next step: ${nextAction.reason}` : ''}
       </div>
-      <Flex align="flex-start" justify="space-between" style={{ gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: '1 1 440px', minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <h1 style={{ margin: 0, fontSize: 28, lineHeight: 1.2 }}>{displayName}</h1>
-            <Button
-              icon={edit}
-              label="Rename site"
-              aria-label="Rename site"
-              onClick={openRenameModal}
-              variant="tertiary"
-              isSmall
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: '#3c434a', flexWrap: 'wrap' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', ...statusStyles }}>
-              {initialized ? 'Initialized' : 'Uninitialized'}
-            </span>
+      <Section
+        plain
+        level={1}
+        title={displayName}
+        titleAdornment={
+          <Button
+            icon={edit}
+            label="Rename site"
+            aria-label="Rename site"
+            onClick={openRenameModal}
+            variant="tertiary"
+            isSmall
+          />
+        }
+        actions={
+          <DropdownMenu
+            label="More"
+            text=""
+            controls={[
+              { title: 'Copy path', onClick: copyPath },
+              // Opening the folder lives in the header's "Open directory in"
+              // menu, next to the path it acts on. Repeating it here would be two
+              // menus answering the same question a few pixels apart.
+              { title: fileManagerLabel, onClick: showInFileManager },
+              // Also reachable when the site is not yet stale (the staleness
+              // notice is the primary entry point) — a fresh site just gets
+              // "Already up to date." in the terminal.
+              { title: 'Update to latest trunk', onClick: startTrunkUpdate },
+              // Not while the clone is running: deleting the site would be
+              // removing a directory the app is still writing into. The main
+              // process refuses it either way (see site-registry.js) — that is
+              // the backstop, and not offering a control that cannot work is
+              // the actual answer.
+              ...(isPending ? [] : [
+                { title:'Delete this site', onClick:()=>confirmAnd('Delete this site from disk? This cannot be undone.', ()=>onDelete(sitePath)) }
+              ])
+            ]}
+          />
+        }
+        meta={<>
+          <MetaText>
+            <StatusBadge status={initialized ? 'initialized' : 'uninitialized'} />
             {createdLabel ? <span>Created {createdLabel}</span> : null}
             {age.known ? (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="wpct-meta">
                 {createdLabel ? <span aria-hidden="true">·</span> : null}
                 {age.stale ? (
                   <span
                     aria-hidden="true"
                     title={`Trunk snapshot is ${age.ageDays} days old`}
-                    style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#dba617' }}
+                    className="wpct-stale-dot"
                   />
                 ) : null}
                 <span>{age.label}</span>
               </span>
             ) : null}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
-            <code style={{ fontSize: 12, color: '#3c434a', background: '#f0f0f1', padding: '2px 6px', borderRadius: 4, overflowWrap: 'anywhere' }}>
-              {sitePath}
-            </code>
+          </MetaText>
+          {/* The path, the control that copies it and the control that opens it
+              are one meta block rather than three stacked rows. They answer the
+              same question — "where is this site?" — and separating them was
+              what left "Open directory in" looking like it belonged to nothing.
+              Detection runs when the menu is opened rather than on load: it is a
+              filesystem sweep, and the answer is only needed once someone asks.
+              It is re-read on every open, so an application installed while this
+              app is running shows up the next time the menu is used. */}
+          <MetaText>
+            <code className="wpct-chip">{sitePath}</code>
             <Button
               icon={pathCopied ? checkIcon : copyIcon}
               label={pathCopied ? 'Copied!' : 'Copy path'}
@@ -4191,25 +4232,18 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
               variant="tertiary"
               isSmall
             />
-          </div>
-          {/* One control for one intention, directly under the path it acts on.
-              Detection runs when the menu is opened rather than on load: it is a
-              filesystem sweep, and the answer is only needed once someone asks.
-              It is re-read on every open, so an application installed while this
-              app is running shows up the next time the menu is used. */}
-          <div style={{ marginTop: 4 }}>
             <Dropdown
               popoverProps={{ placement: 'bottom-start', offset: 4 }}
               renderToggle={({ isOpen, onToggle }) => (
                 <Button
                   variant="link"
+                  className="wpct-meta-link"
                   aria-expanded={isOpen}
                   aria-haspopup="menu"
                   onClick={() => {
                     if (!isOpen) void loadDetected();
                     onToggle();
                   }}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 12 }}
                 >
                   Open directory in
                   <Icon icon={chevronDown} size={18} />
@@ -4240,45 +4274,25 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                 </MenuGroup>
               )}
             />
-          </div>
+          </MetaText>
           {/* With no modal in the way, this is the only place a failed open can
               speak — and it carries the way out with it, rather than leaving the
-              contributor to find the menu again. */}
+              contributor to find the menu again.
+
+              Still styled by hand: every notice box in the window is converted
+              together in Phase 4 of plans/ui-polish-pass.md, because introducing
+              <Notice> for this one would leave two notice styles on screen until
+              the rest caught up. */}
           {editorNotice ? (
-            <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 8, padding: '8px 12px', background: '#fcf9e8', border: '1px solid #dba617', borderRadius: 6, fontSize: 12, color: '#6e5406' }}>
+            <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '8px 12px', background: '#fcf9e8', border: '1px solid #dba617', borderRadius: 6, fontSize: 12, color: '#6e5406' }}>
               <span style={{ flex: '1 1 240px' }}>{editorNotice.message}</span>
               {editorNotice.offerPicker ? (
                 <Button variant="tertiary" isSmall onClick={() => void openIn(null)}>Choose application…</Button>
               ) : null}
             </div>
           ) : null}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-          <DropdownMenu
-            label="More"
-            text=""
-            controls={[
-              { title: 'Copy path', onClick: copyPath },
-              // Opening the folder lives in the header's "Open directory in"
-              // menu, next to the path it acts on. Repeating it here would be two
-              // menus answering the same question a few pixels apart.
-              { title: fileManagerLabel, onClick: showInFileManager },
-              // Also reachable when the site is not yet stale (the staleness
-              // notice is the primary entry point) — a fresh site just gets
-              // "Already up to date." in the terminal.
-              { title: 'Update to latest trunk', onClick: startTrunkUpdate },
-              // Not while the clone is running: deleting the site would be
-              // removing a directory the app is still writing into. The main
-              // process refuses it either way (see site-registry.js) — that is
-              // the backstop, and not offering a control that cannot work is
-              // the actual answer.
-              ...(isPending ? [] : [
-                { title:'Delete this site', onClick:()=>confirmAnd('Delete this site from disk? This cannot be undone.', ()=>onDelete(sitePath)) }
-              ])
-            ]}
-          />
-        </div>
-      </Flex>
+        </>}
+      />
       {updateIncomplete && !isUpdating ? (
         <div {...cueProps('retry-install-build')} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '12px 16px', background: '#fcf0f1', border: '1px solid #d63638', borderRadius: 8, fontSize: 13, color: '#8a1f21' }}>
           <span style={{ flex: '1 1 320px' }}>
@@ -4445,32 +4459,27 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       ) : (
         null
       )}
+      {/* These two buttons were the clearest case of the complaint this pass
+          answers: they sat in bare whitespace between the header and the Trac
+          card, so they read as page furniture rather than as this site's own
+          actions. The rule above them is what makes them belong to the site
+          named directly overhead, and the status lines below them sit inside the
+          same region as the button that produces them. */}
       {skipInit ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'stretch', gap: 12, flexWrap: 'wrap' }}>
+        <div className="wpct-site-actions">
+          <ActionRow divided>
             <span {...cueProps('start-dev')} style={{ display: 'inline-flex' }}>
             <Button
               isBusy={isServerStarting}
               variant={isDevProcessActive ? 'secondary' : 'primary'}
               onClick={toggleDevServer}
               disabled={isUpdating}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 220, justifyContent: 'center', padding: '12px 20px', fontSize: 15, borderRadius: 12 }}
+              className="wpct-primary-action"
             >
               {isDevProcessActive ? (
-                <span
-                  aria-hidden="true"
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    background: '#d63638',
-                    boxShadow: '0 0 0 4px rgba(214,54,56,0.15)',
-                    marginRight: 6
-                  }}
-                />
+                <span aria-hidden="true" className="wpct-running-dot" />
               ) : null}
-              <span style={{ fontWeight: 600 }}>{devServerButtonLabel}</span>
+              {devServerButtonLabel}
             </Button>
             </span>
             <Button
@@ -4491,22 +4500,21 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
               variant="secondary"
               onClick={openPatchModal}
               disabled={isUpdating}
-              style={{ padding: '10px 16px', borderRadius: 10 }}
             >Review & submit changes</Button>
             </span>
-          </div>
+          </ActionRow>
           {changesNote && changesNote.placement === 'buttons' ? (
-            <div style={{ fontSize: 13, color: '#1d2327', paddingLeft: 2 }}>
+            <div className="wpct-site-actions__status">
               {changesNoteBody}
             </div>
           ) : null}
           {(isServerStarting || serverUrl) ? (
-            <div style={{ fontSize: 13, color: '#1d2327', paddingLeft: 2, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div className="wpct-site-actions__status">
               {serverUrl ? (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <div className="wpct-action-row">
                     <a href={serverUrl} onClick={(e) => { e.preventDefault(); window.api.openExternal(serverUrl); }}>{serverUrl}</a>
-                    <span aria-hidden="true" style={{ color: '#8c8f94' }}>·</span>
+                    <span aria-hidden="true" className="wpct-meta">·</span>
                     <a href={adminUrl(serverUrl)} onClick={(e) => { e.preventDefault(); window.api.openExternal(adminUrl(serverUrl)); }}>wp-admin</a>
                     {running ? (
                       <>
@@ -4515,7 +4523,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                       </>
                     ) : null}
                   </div>
-                  <span style={{ fontSize: 12, color: '#3c434a' }}>Log in with <code>admin</code> / <code>password</code>.</span>
+                  <MetaText flow>Log in with <code>admin</code> / <code>password</code>.</MetaText>
                 </>
               ) : (
                 `Dev server is starting… (${formatElapsed(startElapsed)})`

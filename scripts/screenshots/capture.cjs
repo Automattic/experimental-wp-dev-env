@@ -41,6 +41,12 @@ const outDir = path.join(repoRoot, 'docs', 'public', 'screenshots');
 // Every image the same size, every run: a fixed window and DPR 1. Without the
 // scale-factor switch a retina display doubles the pixel size of half the
 // screenshots and the docs pages render them inconsistently.
+//
+// A shot can override the width with its own `window` — see `site-view-wide` in
+// shots.cjs. Layout that only appears past a breakpoint is invisible to a
+// harness with one window size, which is how the content column's width cap
+// went unphotographed: at 1200px the window is narrower than the cap, so every
+// image looked identical whether the cap was there or not.
 const WINDOW = { width: 1200, height: 800 };
 const ELECTRON_SWITCHES = ['--force-device-scale-factor=1', '--lang=en-GB'];
 
@@ -78,6 +84,13 @@ function expandHome(p) {
 	return p;
 }
 
+async function setWindow(app, bounds) {
+	await app.evaluate(({ BrowserWindow }, size) => {
+		const win = BrowserWindow.getAllWindows()[0];
+		win.setBounds({ x: 40, y: 40, ...size });
+	}, bounds);
+}
+
 async function launchApp(env) {
 	const app = await _electron.launch({
 		// From plain Node, require('electron') resolves to the binary's path —
@@ -89,19 +102,26 @@ async function launchApp(env) {
 		env: { ...process.env, TZ: 'UTC', ...env }
 	});
 	const page = await app.firstWindow();
-	await app.evaluate(({ BrowserWindow }, bounds) => {
-		const win = BrowserWindow.getAllWindows()[0];
-		win.setBounds({ x: 40, y: 40, ...bounds });
-	}, WINDOW);
+	await setWindow(app, WINDOW);
 	return { app, page };
 }
+
+// Freeze CSS animations and transitions, and rewind them to their first frame,
+// so a shot is a function of the app's state and nothing else.
+//
+// Without this, three images changed on every run with no code change at all:
+// the "Checking GitHub…" spinner is a CSS animation, and each capture caught it
+// at a different angle. That is noise in any diff, and worse than noise in a
+// stack of branches — a rebase hits a binary conflict on a file where nothing
+// actually changed, and binary conflicts have no resolution but to pick a side.
+const SHOT_OPTIONS = { animations: 'disabled' };
 
 async function captureShot(page, shot) {
 	const file = path.join(outDir, `${shot.slug}.png`);
 	if (shot.target) {
-		await shot.target(page).screenshot({ path: file });
+		await shot.target(page).screenshot({ path: file, ...SHOT_OPTIONS });
 	} else {
-		await page.screenshot({ path: file });
+		await page.screenshot({ path: file, ...SHOT_OPTIONS });
 	}
 	console.log(`  ✓ ${shot.slug}.png`);
 }
@@ -113,6 +133,18 @@ async function runFixtureTier(selected) {
 		const { app, page } = await launchApp({ TOOLKIT_USER_DATA_DIR: userDataDir });
 		try {
 			for (const shot of selected.filter((s) => s.variant === variant)) {
+				// Set unconditionally, not only when the shot asks for it: the
+				// previous shot may have widened the window, and a shot that
+				// silently inherits another's size is the bug this whole file
+				// exists to avoid.
+				//
+				// Merged over WINDOW rather than substituted for it, for the
+				// same reason. `setBounds` accepts a partial rectangle, so a
+				// shot declaring only `{ width: 1600 }` — the natural thing to
+				// write when only the width matters — would otherwise keep
+				// whatever height the shot before it left, and `--only=<slug>`
+				// would produce a different image than a full run.
+				await setWindow(app, { ...WINDOW, ...shot.window });
 				// Fresh renderer per shot: open menus and modals from the
 				// previous shot cannot leak into this one.
 				await page.reload();
@@ -163,6 +195,15 @@ async function main() {
 	if (!selected.length) {
 		const known = shots.filter((s) => s.tier === args.tier).map((s) => s.slug);
 		throw new Error(`No ${args.tier}-tier shot matches. Known slugs: ${known.join(', ')}`);
+	}
+	// A `window` on a live shot does nothing — the maintainer owns the window in
+	// that tier — and a silently ignored key is the shape of a wasted hour.
+	const sized = selected.filter((s) => s.tier === 'live' && s.window);
+	if (sized.length) {
+		throw new Error(
+			`Live-tier shots cannot set "window": ${sized.map((s) => s.slug).join(', ')}. ` +
+				'The maintainer sizes the window in that tier.'
+		);
 	}
 	fs.mkdirSync(outDir, { recursive: true });
 	console.log(`Capturing ${selected.length} ${args.tier}-tier screenshot(s) into ${path.relative(repoRoot, outDir)}/`);

@@ -61,10 +61,16 @@
       `border-radius` here only rounds the glow around the wrapped action
       buttons, which set none of their own. The blocks set their radius inline,
       which the glow follows and this does not override.
+
+      It reads --wpct-radius-control so the glow keeps the shape of the button
+      inside it. It was a hand-picked 10px, which was already larger than
+      anything @wordpress/components draws; once the dev-server button lost its
+      own oversized radius, a 10px glow around a 2px button read as a rounded
+      box floating behind a square one.
     */
     .next-action-cue {
-      border-radius: 10px;
-      box-shadow: 0 0 0 3px rgba(240, 184, 73, 0.45), 0 0 14px 3px rgba(240, 184, 73, 0.30);
+      border-radius: var(--wpct-radius-control);
+      box-shadow: 0 0 0 3px rgba(var(--wpct-cue), 0.45), 0 0 14px 3px rgba(var(--wpct-cue), 0.30);
     }
     /* Visually hidden but read aloud — the spoken half of the next-action cue
        (#252), for the live region that names the next step. */

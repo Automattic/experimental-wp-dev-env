@@ -1,0 +1,395 @@
+/*
+ * The one place a spacing, colour, radius or type decision is made.
+ *
+ * The renderer grew as inline `style={{}}` objects, so every panel picked its own
+ * values and no two agreed: eight margins, three border greys, two muted greys,
+ * three radii. None of that was a decision — it was 300 separate ones. These
+ * tokens are the dedupe, not an invention: each replaces a set of values already
+ * in the file.
+ *
+ * Values follow the WordPress Design System, because the app already renders
+ * @wordpress/components. Matching its scale is what stops the stock controls
+ * looking like foreign objects dropped into hand-painted panels.
+ *
+ * Imported from index.jsx *after* @wordpress/components/build-style/style.css, so
+ * the cascade puts these last. esbuild concatenates CSS imports in import order
+ * (--loader:.css=css), which gives that for free with no build change.
+ *
+ * Dark mode is deliberately absent. Every surface here is painted light by hand
+ * and @wordpress/components ships light styles only; test/color-scheme.test.cjs
+ * holds that line. A dark theme is its own project, not a second set of tokens.
+ */
+
+:root {
+	/*
+	 * The spacing scale. Six steps replacing the 4/6/8/10/12/14/16/24 in use
+	 * today — the odd steps existed because nothing said which to reach for.
+	 *
+	 * Three of these carry meaning rather than size, and that is the point of
+	 * the whole pass: -2 (8px) is *within* a group, -4 (16px) is *between*
+	 * groups inside a card, -5 (24px) is *between* cards. Spacing is how a
+	 * reader tells what belongs to what, so those three are not interchangeable.
+	 */
+	--wpct-space-1: 4px;
+	--wpct-space-2: 8px;
+	--wpct-space-3: 12px;
+	--wpct-space-4: 16px;
+	--wpct-space-5: 24px;
+	--wpct-space-6: 32px;
+
+	/* Borders. One hairline for real edges, one fainter for dividers inside a
+	   card — a divider that is as dark as the card's own border reads as a
+	   second card starting. */
+	--wpct-border: #e0e0e0;
+	--wpct-border-subtle: #f0f0f1;
+
+	/* Text. Two values, not the four the file uses today. Muted is for
+	   supporting lines only; anything a contributor has to read to act on is
+	   --wpct-text. */
+	--wpct-text: #1e1e1e;
+	--wpct-text-muted: #6c6f72;
+
+	--wpct-accent: #3858e9;
+	--wpct-destructive: #d63638;
+
+	/* Surfaces. */
+	--wpct-surface: #fff;
+	--wpct-surface-subtle: #f0f0f1;
+
+	/*
+	 * Two radii, not three. WPDS rounds controls at 2px and surfaces at 4px;
+	 * the 6/8/10/12 values in the file today are all larger than anything
+	 * @wordpress/components draws, which is why hand-rolled boxes never quite
+	 * sat next to the stock ones.
+	 */
+	--wpct-radius-control: 2px;
+	--wpct-radius-surface: 4px;
+
+	--wpct-font-size-small: 12px;
+	--wpct-font-size-base: 13px;
+
+	/*
+	 * Notice palettes. Four triples, each currently hand-inlined in several
+	 * places. Defined here now because StatusBadge's tones already read them;
+	 * the notice boxes themselves are converted in a later phase.
+	 */
+	--wpct-info-background: #f0f6fc;
+	--wpct-info-border: #c5d9ed;
+	--wpct-info-text: #0b5d95;
+
+	--wpct-warning-background: #fcf9e8;
+	--wpct-warning-border: #dba617;
+	--wpct-warning-text: #6e5406;
+
+	--wpct-success-background: #f4fbf4;
+	--wpct-success-border: #94d3ae;
+	--wpct-success-text: #0f5132;
+
+	--wpct-error-background: #fcf0f1;
+	--wpct-error-border: #d63638;
+	--wpct-error-text: #8a1f21;
+
+	/*
+	 * The next-action cue's glow (#252), as RGB channels so index.html can vary
+	 * its alpha.
+	 *
+	 * #f0b849 is WordPress's own alert yellow — COLORS.alert.yellow in
+	 * @wordpress/components, the colour it paints a warning Notice's left border
+	 * with — and it is deliberately not --wpct-warning-border. The cue is not a
+	 * warning: it says "do this next", and it is frequently drawn *around* a
+	 * warning notice, where a glow in that notice's own border colour would
+	 * disappear into it.
+	 */
+	--wpct-cue: 240, 184, 73;
+
+	/*
+	 * The readable measure for the content column. Without a cap, a heading and
+	 * its meta line stretch the full width of a maximised window and the eye
+	 * loses the left spine on the way back.
+	 */
+	--wpct-content-max-width: 880px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Primitives.
+ *
+ * Class names rather than inline styles, so a token change lands everywhere at
+ * once. Each of these has a component wrapper in src/renderer/ui/ — the CSS is
+ * here so the whole visual language reads in one file.
+ * ------------------------------------------------------------------------ */
+
+/* Section: one card per section of the page. */
+.wpct-section {
+	background: var(--wpct-surface);
+	border: 1px solid var(--wpct-border);
+	border-radius: var(--wpct-radius-surface);
+	padding: var(--wpct-space-5);
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpct-space-4);
+	color: var(--wpct-text);
+}
+
+/* A section that carries no card chrome — used where the page itself is already
+   the container, as the site header is. It still owns the spine and the
+   between-group rhythm, which is what the rest of the card gives. */
+.wpct-section--plain {
+	background: none;
+	border: 0;
+	padding: 0;
+}
+
+.wpct-section__header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--wpct-space-4);
+	flex-wrap: wrap;
+}
+
+/* The heading and anything that describes it stay together; the actions sit
+   opposite. Grouping rule 1: an action belongs to a region, never to whitespace. */
+.wpct-section__heading {
+	flex: 1 1 440px;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpct-space-2);
+}
+
+.wpct-section__title-row {
+	display: flex;
+	align-items: center;
+	gap: var(--wpct-space-2);
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.wpct-section__title {
+	margin: 0;
+	font-size: 20px;
+	line-height: 1.3;
+	font-weight: 600;
+	color: var(--wpct-text);
+}
+
+/* Heading level drives size, so the page's one h1 stays the page's one h1 and
+   no caller has to pass a font size alongside a level. */
+h1.wpct-section__title {
+	font-size: 28px;
+	line-height: 1.2;
+}
+
+.wpct-section__body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpct-space-4);
+	min-width: 0;
+}
+
+/*
+ * ActionRow: the bounded region a group of buttons lives in.
+ *
+ * `--divided` is grouping rule 4 — a rule separates two groups, so it goes on
+ * top of a trailing action row and never above the first group or below the
+ * last.
+ */
+.wpct-action-row {
+	display: flex;
+	align-items: center;
+	gap: var(--wpct-space-2);
+	flex-wrap: wrap;
+}
+
+.wpct-action-row--divided {
+	border-top: 1px solid var(--wpct-border-subtle);
+	padding-top: var(--wpct-space-4);
+}
+
+.wpct-action-row--end {
+	justify-content: flex-end;
+}
+
+/* MetaText: the supporting line under a heading. One size, one grey. */
+.wpct-meta {
+	font-size: var(--wpct-font-size-small);
+	color: var(--wpct-text-muted);
+	display: flex;
+	align-items: center;
+	gap: var(--wpct-space-2);
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+/*
+ * A meta line that is a sentence rather than a row of items.
+ *
+ * The flex layout above makes each contiguous run of text its own anonymous
+ * flex item, so "Log in with <code>admin</code> / <code>password</code>." lays
+ * out as five items with a gap between every one — including before the full
+ * stop — each free to wrap onto its own line. Prose needs normal inline flow.
+ */
+.wpct-meta--flow {
+	display: block;
+}
+
+/*
+ * The path chip.
+ *
+ * Deliberately its own class rather than `.wpct-meta code`. That rule caught
+ * every `code` element in a meta line, which meant the `admin` / `password` in
+ * the dev-server credentials line picked up a chip background it never had and
+ * did not want — they are words in a sentence, not a value to be copied.
+ *
+ * --wpct-text rather than --wpct-text-muted: muted grey is for supporting text,
+ * and this is a string the contributor reads in order to act. It also has to
+ * clear AA on the chip's own background, which the muted grey does not —
+ * #6c6f72 on #f0f0f1 is 4.44:1, just under the 4.5:1 threshold at this size.
+ */
+.wpct-chip {
+	background: var(--wpct-surface-subtle);
+	border-radius: var(--wpct-radius-control);
+	padding: 2px 6px;
+	overflow-wrap: anywhere;
+	color: var(--wpct-text);
+	font-size: var(--wpct-font-size-small);
+}
+
+/* A link-styled button that is part of a meta line rather than a control beside
+   it — @wordpress/components sizes its own text, so it has to be told to match
+   the line it sits in. */
+.wpct-meta-link.components-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: var(--wpct-font-size-small);
+	height: auto;
+}
+
+/* The amber dot beside a stale trunk snapshot. It is decoration for the label
+   next to it — aria-hidden at the call site — never the signal on its own. */
+.wpct-stale-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--wpct-warning-border);
+}
+
+/*
+ * StatusBadge: one badge shape for every status in the app.
+ *
+ * It replaces both the rounded pill in the site header and the bare uppercase
+ * words in the setup checklist. Those said the same kind of thing in two visual
+ * languages, which is a large part of why the app read as unconsidered.
+ */
+.wpct-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px var(--wpct-space-2);
+	border-radius: var(--wpct-radius-control);
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	white-space: nowrap;
+	border: 1px solid transparent;
+}
+
+.wpct-badge--success {
+	background: var(--wpct-success-background);
+	border-color: var(--wpct-success-border);
+	color: var(--wpct-success-text);
+}
+
+.wpct-badge--warning {
+	background: var(--wpct-warning-background);
+	border-color: var(--wpct-warning-border);
+	color: var(--wpct-warning-text);
+}
+
+.wpct-badge--info {
+	background: var(--wpct-info-background);
+	border-color: var(--wpct-info-border);
+	color: var(--wpct-info-text);
+}
+
+.wpct-badge--error {
+	background: var(--wpct-error-background);
+	border-color: var(--wpct-error-border);
+	color: var(--wpct-error-text);
+}
+
+/* Neutral is the "nothing has happened yet" tone — a locked setup step, an
+   unknown state. It must not read as a warning. */
+.wpct-badge--neutral {
+	background: var(--wpct-surface-subtle);
+	border-color: var(--wpct-border);
+	color: var(--wpct-text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * One site's page: the header, then a stack of cards.
+ * ------------------------------------------------------------------------ */
+
+/* The 24px is --wpct-space-5 doing its one job — the gap *between* cards. The
+   trailing space is so the last card can be scrolled clear of the window edge. */
+.wpct-site-page {
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpct-space-5);
+	padding-bottom: var(--wpct-space-6);
+}
+
+/* ---------------------------------------------------------------------------
+ * The site's own actions: the region directly under the site header.
+ * ------------------------------------------------------------------------ */
+
+.wpct-site-actions {
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpct-space-3);
+}
+
+/* The lines the buttons above produce — a URL, a note about uncommitted
+   changes. They are inside the same region as the control that causes them,
+   which is the whole point: a status line floating on its own says nothing
+   about what produced it. */
+.wpct-site-actions__status {
+	font-size: var(--wpct-font-size-base);
+	color: var(--wpct-text);
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpct-space-1);
+}
+
+/*
+ * The site's primary action.
+ *
+ * It used to be drawn at 15px on a 12px radius with its own padding — larger
+ * than anything @wordpress/components draws, which made it read as a control
+ * from a different app rather than as the important one. Emphasis now comes
+ * from width alone, and the shape is the stock button's.
+ */
+.wpct-primary-action.components-button {
+	min-width: 220px;
+	justify-content: center;
+	gap: var(--wpct-space-2);
+}
+
+/* The dev server is running. Red because stopping is what the button now does. */
+.wpct-running-dot {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background: var(--wpct-destructive);
+	box-shadow: 0 0 0 4px rgba(214, 54, 56, 0.15);
+}
+
+/* The readable measure, applied to the scrolling content column. */
+.wpct-content-column {
+	max-width: var(--wpct-content-max-width);
+	margin: 0 auto;
+	width: 100%;
+}

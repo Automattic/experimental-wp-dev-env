@@ -1,6 +1,6 @@
 // The declarative list of documentation screenshots.
 //
-// Each entry is { slug, tier, variant, prepare, target }:
+// Each entry is { slug, tier, variant, prepare, target, window }:
 //   - slug: the output filename, docs/public/screenshots/<slug>.png — docs pages
 //     reference these names, so renaming one is a docs change too;
 //   - tier 'fixture': captured fully automatically against seeded state;
@@ -12,7 +12,13 @@
 //     if a label changes, the shot fails loudly instead of photographing the
 //     wrong thing;
 //   - target (optional): a locator for an element screenshot instead of the
-//     whole window. Panels read better cropped; whole-window shots orient.
+//     whole window. Panels read better cropped; whole-window shots orient;
+//   - window (optional, fixture tier only): { width, height } for this shot
+//     alone, merged over the harness default of 1200x800. Reach for it when the
+//     layout worth showing only appears at another size — `site-view-wide` is
+//     the case, and its comment explains why. Partial is fine: `{ width: 1600 }`
+//     keeps the default height. The live tier ignores it, because there the
+//     maintainer owns the window.
 //
 // Three shots that used to be fixture-tier are live-tier now, joining
 // dev-server-running, and moving them back would photograph a screen the 1.0
@@ -29,13 +35,34 @@
 // tier still covers everything else.
 
 /**
- * Clicks a site in the sidebar and waits for its view to render.
+ * Clicks a site in the sidebar and waits for its view to settle.
+ *
+ * The wait is not cosmetic. Selecting a site with a linked ticket fires the
+ * linked-pull-request lookup, which is a network call, and the panel shows a
+ * spinner until it answers. Without waiting, whether a shot catches the spinner
+ * or the result is a coin flip — the same run has produced site-view.png
+ * mid-check and trac-ticket-panel.png already resolved, which is two different
+ * answers to the same question in one set of docs images.
+ *
+ * It also made three PNGs change on every run with no code change at all. In a
+ * stack of branches that is worse than noise: rebasing hits a binary conflict on
+ * a file nothing actually changed, and a binary conflict has no resolution
+ * except to pick a side and re-capture.
+ *
+ * Bounded and swallowed rather than awaited indefinitely: a site with no ticket
+ * never shows the spinner at all, and a harness that hangs because GitHub is
+ * slow is worse than one that photographs a spinner.
  *
  * @param {import('playwright-core').Page} page
  * @param {string}                         label
  */
 async function selectSite(page, label) {
 	await page.getByText(label, { exact: true }).first().click();
+	await page
+		.getByText('Checking GitHub…')
+		.first()
+		.waitFor({ state: 'hidden', timeout: 15000 })
+		.catch(() => {});
 }
 
 /**
@@ -69,6 +96,27 @@ const shots = [
 		prepare: async (page) => {
 			await page.getByRole('button', { name: 'Create WordPress Core site' }).click();
 			await page.getByRole('dialog').getByText('Site name').waitFor();
+		}
+	},
+	{
+		// The content column's width cap, which no other shot can show: at the
+		// default 1200px window the content area is 855px — the width every
+		// cropped panel shot here comes out at — which is narrower than the
+		// 880px cap, so the cap has no effect and the image looks the same with
+		// or without it. This is the only shot that proves --wpct-content-max-width
+		// does anything, and the only one that would catch its removal.
+		//
+		// Unlike its neighbours it is referenced by no docs page. It ships in
+		// the VitePress build as a review artifact, deliberately: the cap is
+		// otherwise unfalsifiable by eye, and test/content-column.test.cjs
+		// asserts this image exists and was captured at the declared width.
+		slug: 'site-view-wide',
+		tier: 'fixture',
+		variant: 'seeded',
+		window: { width: 1600, height: 800 },
+		prepare: async (page) => {
+			await selectSite(page, 'my-first-patch');
+			await page.getByRole('button', { name: 'Submit changes' }).waitFor();
 		}
 	},
 	{
