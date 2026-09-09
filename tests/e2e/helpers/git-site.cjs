@@ -18,8 +18,13 @@ const fs = require( 'node:fs' );
 const os = require( 'node:os' );
 const path = require( 'node:path' );
 const { pathToFileURL } = require( 'node:url' );
-const git = require( 'isomorphic-git' );
-const { git: gitBinary } = require( '../../unit/helpers/git.cjs' );
+const {
+	gitOk: run,
+	initRepo,
+	commitFiles,
+	currentBranch: headBranch,
+	listBranches,
+} = require( '../../unit/helpers/git.cjs' );
 
 const TRUNK = 'trunk';
 const AUTHOR = { name: 'e2e', email: 'e2e@example.test' };
@@ -76,17 +81,15 @@ const TRUNK_FILES = {
 async function makeSite( session, { label = 'e2e-site', legacy = false, origin = false } = {} ) {
 	const dir = session.track( fs.mkdtempSync( path.join( os.tmpdir(), 'wpct-e2e-site-' ) ) );
 
-	await git.init( { fs, dir, defaultBranch: TRUNK } );
-	// The shape the clone writes (git-clone.cjs): a site the app supports has
-	// core.autocrlf pinned, so a switch writes LF on Windows too and the
-	// byte-for-byte invariants mean the same on every platform.
-	await git.setConfig( { fs, dir, path: 'core.autocrlf', value: false } );
+	// initRepo gives it the shape the clone writes (git-clone.cjs): a site the
+	// app supports has core.autocrlf pinned, so a switch writes LF on Windows
+	// too and the byte-for-byte invariants mean the same on every platform.
+	initRepo( dir, { branch: TRUNK } );
 	fs.mkdirSync( path.join( dir, 'src' ), { recursive: true } );
 	for ( const [ file, content ] of Object.entries( TRUNK_FILES ) ) {
 		fs.writeFileSync( path.join( dir, file ), content );
 	}
-	await git.add( { fs, dir, filepath: Object.keys( TRUNK_FILES ) } );
-	const baseOid = await git.commit( { fs, dir, message: 'trunk', author: AUTHOR } );
+	const baseOid = commitFiles( dir, Object.keys( TRUNK_FILES ), 'trunk', { author: AUTHOR } );
 
 	// What a site the old engine cloned looks like to the app (#385): the root
 	// commit listed in .git/shallow, and a remote with no promisor. The app
@@ -94,7 +97,7 @@ async function makeSite( session, { label = 'e2e-site', legacy = false, origin =
 	// these two things.
 	if ( legacy ) {
 		fs.writeFileSync( path.join( dir, '.git', 'shallow' ), `${ baseOid }\n` );
-		await git.addRemote( { fs, dir, remote: 'origin', url: 'https://example.test/wordpress-develop.git' } );
+		run( [ 'remote', 'add', 'origin', 'https://example.test/wordpress-develop.git' ], dir );
 	}
 
 	// Where "Update to latest trunk" fetches from (#385): a clone of the site
@@ -120,21 +123,6 @@ async function makeSite( session, { label = 'e2e-site', legacy = false, origin =
 }
 
 /**
- * Runs the bundled Git in a fixture directory and fails loudly if it does.
- *
- * @param {string[]} args
- * @param {string}   cwd
- * @return {string} Trimmed stdout.
- */
-function run( args, cwd ) {
-	const result = gitBinary( args, cwd );
-	if ( result.status !== 0 ) {
-		throw new Error( `git ${ args.join( ' ' ) } failed (${ result.status }): ${ result.stderr }` );
-	}
-	return result.stdout;
-}
-
-/**
  * Commits new content into the site's origin, so the next update has
  * something to fetch. Returns the new tip.
  *
@@ -148,9 +136,7 @@ function advanceOrigin( origin, files, message = 'trunk moves on' ) {
 		fs.mkdirSync( path.dirname( path.join( origin, file ) ), { recursive: true } );
 		fs.writeFileSync( path.join( origin, file ), content );
 	}
-	run( [ 'add', '-A', '--', ...Object.keys( files ) ], origin );
-	run( [ '-c', `user.name=${ AUTHOR.name }`, '-c', `user.email=${ AUTHOR.email }`, 'commit', '-q', '-m', message ], origin );
-	return run( [ 'rev-parse', 'HEAD' ], origin );
+	return commitFiles( origin, Object.keys( files ), message, { author: AUTHOR } );
 }
 
 /**
@@ -209,15 +195,15 @@ const write = ( dir, file, content ) => fs.writeFileSync( path.join( dir, file )
  * believes.
  *
  * @param {string} dir
- * @return {Promise<string[]>}
+ * @return {string[]}
  */
-const branches = ( dir ) => git.listBranches( { fs, dir } );
+const branches = ( dir ) => listBranches( dir );
 
 /**
  * @param {string} dir
- * @return {Promise<string>}
+ * @return {string}
  */
-const currentBranch = ( dir ) => git.currentBranch( { fs, dir, fullname: false } );
+const currentBranch = ( dir ) => headBranch( dir );
 
 /**
  * Writes a unified diff to a file the app's dialog can be pointed at.

@@ -67,7 +67,7 @@ test('lockfileChangedFromBlobOids: same oid -> unchanged, different oid -> chang
 
 test('normalizeEolBuffer: byte-level CRLF stripping works on non-UTF8 content (issue #94)', () => {
 	// Big5-style bytes that are not valid UTF-8, with CRLF line endings —
-	// the case isomorphic-git's utf8-based autocrlf normalization skips.
+	// the case any normalization that decodes the text first would skip.
 	const crlf = Buffer.from([0xa4, 0xa4, 0x0d, 0x0a, 0xa4, 0xe5, 0x0d, 0x0a]);
 	const lf = Buffer.from([0xa4, 0xa4, 0x0a, 0xa4, 0xe5, 0x0a]);
 	assert.ok(normalizeEolBuffer(crlf).equals(lf));

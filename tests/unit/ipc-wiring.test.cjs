@@ -35,12 +35,44 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const git = require('isomorphic-git');
+const {
+	git: bin,
+	gitOk,
+	initRepo,
+	commitFiles,
+	resolveRef: revParse,
+	currentBranch,
+	listBranches,
+	commitMeta,
+	tempDir
+} = require('./helpers/git.cjs');
 // The applied-layer module turns the handler's measured status into the
 // attribution the renderer shows.
 const { attributeConflicts } = require('../../src/renderer/applied-layer.cjs');
 const SRC_DIR = path.join(__dirname, '..', '..', 'src');
 const MAIN_PATH = path.join(SRC_DIR, 'main.js');
+
+/**
+ * A repository shaped the way a checkout the app adopted is shaped rather than
+ * one it cloned itself: no `core.autocrlf` in the repository config, which is
+ * what leaves the Windows CRLF view (`crlfArgs` in git-read.cjs) in play. The
+ * patch-generation tests below use `patchRepo` instead, the clone's shape,
+ * because what they assert byte for byte is what a site the app made holds.
+ *
+ * @param {import('node:test').TestContext} t
+ * @param {string}                          prefix
+ * @return {string} The directory.
+ */
+const adoptedRepo = (t, prefix) => initRepo(tempDir(t, prefix), { autocrlf: null });
+
+/**
+ * The whole worktree and index as Git sees them, for the assertions that took
+ * a before-and-after snapshot to prove a handler staged nothing.
+ *
+ * @param {string} dir
+ * @return {string}
+ */
+const statusScan = (dir) => gitOk(['status', '--porcelain=v2', '-z', '--untracked-files=all'], dir);
 
 // --- the harness ---------------------------------------------------------
 //
@@ -504,9 +536,7 @@ test('site:status reports the trunk snapshot trunk-update read, not its own gues
 });
 
 test('site:status does not seed excludes in an unregistered repository (issue #19)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-unregistered-exclude-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-unregistered-exclude-');
 	const excludePath = path.join(dir, '.git', 'info', 'exclude');
 	fs.writeFileSync(excludePath, 'existing-rule/\n');
 	const settings = fakeSettingsStore({ sites: [], siteMeta: {} });
@@ -524,12 +554,9 @@ test('site:status does not seed excludes in an unregistered repository (issue #1
 });
 
 test('git:get-patch does not seed excludes in an unregistered repository (issue #19)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-unregistered-patch-exclude-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-unregistered-patch-exclude-');
 	fs.writeFileSync(path.join(dir, 'README.md'), 'base\n');
-	await git.add({ fs, dir, filepath: 'README.md' });
-	await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	commitFiles(dir, ['README.md'], 'init');
 	fs.appendFileSync(path.join(dir, 'README.md'), 'edit\n');
 	const excludePath = path.join(dir, '.git', 'info', 'exclude');
 	fs.writeFileSync(excludePath, 'existing-rule/\n');
@@ -583,25 +610,15 @@ test('git:discard-changes resets through trunk-update and clears the applied-pat
 // `src/` layout instead, because a patch's paths are read through
 // `mapToSrcLayout` and a collision is a string match on the result.
 async function parkedTicketRepo(t, { workFile = 'wp-login.php' } = {}) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-parked-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
-	const author = { name: 'test', email: 'test@example.com' };
+	const dir = adoptedRepo(t, 'ipc-wiring-parked-');
 	const abs = path.join(dir, workFile);
 	fs.mkdirSync(path.dirname(abs), { recursive: true });
 	const baseText = '<?php // login\n';
 	fs.writeFileSync(abs, baseText);
-	await git.add({ fs, dir, filepath: workFile });
-	const baseOid = await git.commit({ fs, dir, message: 'trunk snapshot', author });
-	await git.branch({ fs, dir, ref: 'ticket/62281', object: 'trunk', checkout: true });
+	const baseOid = commitFiles(dir, [workFile], 'trunk snapshot');
+	gitOk(['checkout', '-b', 'ticket/62281', 'trunk'], dir);
 	fs.writeFileSync(abs, `${baseText}// the ticket work\n`);
-	await git.add({ fs, dir, filepath: workFile });
-	await git.commit({
-		fs, dir,
-		message: 'Work in progress (WordPress Contributor Toolkit)',
-		author,
-		parent: [baseOid]
-	});
+	commitFiles(dir, [workFile], 'Work in progress (WordPress Contributor Toolkit)');
 	return { dir, baseOid, workFile, baseText };
 }
 
@@ -656,12 +673,9 @@ test('git:unsubmitted-work counts parked and uncommitted work as one answer (#23
 // On trunk there is no branch point and nothing parked, so the two questions
 // coincide — a site that never linked a ticket must see no change at all.
 test('git:unsubmitted-work matches git:worktree-dirty on trunk (#239)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-trunk-note-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-trunk-note-');
 	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // login\n');
-	await git.add({ fs, dir, filepath: 'wp-login.php' });
-	await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	commitFiles(dir, ['wp-login.php'], 'init');
 	const main = loadMain({
 		stubs: { ...silentLogging(), ...fakeSettingsStore({ sites: [dir], siteMeta: { [dir]: {} } }).stubs }
 	});
@@ -728,9 +742,9 @@ test('git:discard-to-base rewinds the branch to its base, parked work included (
 		/the ticket work/,
 		'the parked work is rewound too, unlike a plain discard'
 	);
-	assert.equal(await git.resolveRef({ fs, dir, ref: 'HEAD' }), baseOid, 'HEAD is the branch base');
+	assert.equal(revParse(dir, 'HEAD'), baseOid, 'HEAD is the branch base');
 	assert.equal(
-		await git.currentBranch({ fs, dir, fullname: false }),
+		currentBranch(dir),
 		'ticket/62281',
 		'still on the ticket branch — the ticket stays linked'
 	);
@@ -839,9 +853,7 @@ test('git:update-trunk keeps the applied-patch record when the fetch fails', asy
 });
 
 test('sites:add seeds the local excludes and registers the directory, writing no Git config', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-add-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-add-');
 	const settings = fakeSettingsStore({ sites: [], siteMeta: {} });
 	const main = loadMain({ stubs: { ...silentLogging(), ...settings.stubs } });
 
@@ -859,15 +871,12 @@ test('sites:add seeds the local excludes and registers the directory, writing no
 // Patch generation is the one delegation that needs a real repository:
 // normalizeEol is called per file, on content read out of the object store.
 test('git:get-patch normalizes both sides of the diff through git-update', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-');
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\nline2\n');
-	await git.add({ fs, dir, filepath: 'text.txt' });
-	const head = await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	const head = commitFiles(dir, ['text.txt'], 'init');
 	// Without it the handler falls back to fetching wordpress-develop, and this
 	// suite does not touch the network.
-	await git.writeRef({ fs, dir, ref: 'refs/remotes/origin/trunk', value: head });
+	gitOk(['update-ref', 'refs/remotes/origin/trunk', head], dir);
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\nline2\nline3\n');
 
 	const real = require('../../src/git-update.cjs');
@@ -894,13 +903,10 @@ test('git:get-patch normalizes both sides of the diff through git-update', async
 // the test that makes that claim falsifiable through the real handler: a new file
 // must reach the patch, and the contributor's index must be no dirtier for it.
 test('git:get-patch includes an untracked file without staging it (issues #108, #85)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-');
 	fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\n');
-	await git.add({ fs, dir, filepath: ['.gitignore', 'text.txt'] });
-	await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	commitFiles(dir, ['.gitignore', 'text.txt'], 'init');
 
 	fs.writeFileSync(path.join(dir, 'brand-new.php'), '<?php // a file the contributor added\n');
 	// Ignored, and must stay out of the patch however the diff is computed.
@@ -908,7 +914,7 @@ test('git:get-patch includes an untracked file without staging it (issues #108, 
 	fs.writeFileSync(path.join(dir, 'node_modules', 'junk.js'), 'noise\n');
 
 	const main = loadMain({ stubs: { ...silentLogging() } });
-	const before = await git.statusMatrix({ fs, dir });
+	const before = statusScan(dir);
 	const result = await main.invoke('git:get-patch', dir);
 
 	assert.equal(result.ok, true);
@@ -916,19 +922,16 @@ test('git:get-patch includes an untracked file without staging it (issues #108, 
 	assert.match(result.patch, /\+<\?php \/\/ a file the contributor added/);
 	assert.doesNotMatch(result.patch, /node_modules/, 'gitignored paths stay out');
 	assert.deepEqual(
-		await git.statusMatrix({ fs, dir }),
+		statusScan(dir),
 		before,
 		'generating a patch must not stage anything into the contributor\'s index (#85)'
 	);
 });
 
 test('git:get-patch excludes local coding-agent directories from a managed site (issue #19)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-agent-exclude-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-agent-exclude-');
 	fs.writeFileSync(path.join(dir, 'README.md'), 'managed wordpress-develop site\n');
-	await git.add({ fs, dir, filepath: 'README.md' });
-	await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	commitFiles(dir, ['README.md'], 'init');
 	fs.writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'build/\n');
 
 	const agentArtifacts = [
@@ -988,15 +991,11 @@ test('git:get-patch excludes local coding-agent directories from a managed site 
 // the CRLF view for those (crlfArgs), so a byte-for-byte assertion on what a
 // generated patch wrote would see CRLF where the patch said LF.
 async function patchRepo(t, files) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-patch-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
-	await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
+	const dir = initRepo(tempDir(t, 'ipc-wiring-patch-'));
 	for (const [name, content] of Object.entries(files)) {
 		fs.writeFileSync(path.join(dir, name), content);
 	}
-	await git.add({ fs, dir, filepath: Object.keys(files) });
-	await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	commitFiles(dir, Object.keys(files), 'init');
 	return dir;
 }
 
@@ -1130,7 +1129,6 @@ test('a generated patch applies when the files have no trailing newline (#85)', 
 // to apply patches (#385): every shape the generator emits, checked by the
 // bundled Git against a second checkout of the same base.
 test('a generated patch is accepted by git apply --check, every shape the generator emits (#85, #385)', async (t) => {
-	const { git: bin } = require('./helpers/git.cjs');
 	const base = {
 		'gone.php': '<?php // removed\n',
 		'edited.php': 'line1\nline2\n',
@@ -1333,14 +1331,11 @@ test('git:create-patch and git:save-patch generate the patch the same way', asyn
 // A repository the patch path can actually run against, so the handler reaches
 // the provenance step instead of stopping at the first git call.
 async function fixtureRepo(t) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-handoff-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-handoff-');
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\n');
-	await git.add({ fs, dir, filepath: 'text.txt' });
-	const head = await git.commit({ fs, dir, message: 'init', author: { name: 'test', email: 'test@example.com' } });
+	const head = commitFiles(dir, ['text.txt'], 'init');
 	// Without it the handler falls back to fetching wordpress-develop.
-	await git.writeRef({ fs, dir, ref: 'refs/remotes/origin/trunk', value: head });
+	gitOk(['update-ref', 'refs/remotes/origin/trunk', head], dir);
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\nline2\n');
 	return dir;
 }
@@ -1390,22 +1385,17 @@ test('git:save-patch with handoff asks patch-provenance for the header and the n
 // read off that same commit rather than the site record, so the two halves of
 // the line cannot describe different commits.
 test('git:save-patch with handoff dates the header from the branch base, not the site trunk', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-branch-base-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
-	const author = { name: 'test', email: 'test@example.com' };
+	const dir = adoptedRepo(t, 'ipc-wiring-branch-base-');
 
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\n');
-	await git.add({ fs, dir, filepath: 'text.txt' });
-	const bornAt = await git.commit({ fs, dir, message: 'trunk as it was', author });
+	const bornAt = commitFiles(dir, ['text.txt'], 'trunk as it was');
 
 	// Trunk moves on after the branch exists — the case the site record gets
 	// right for trunk and wrong for every branch already open.
-	await git.branch({ fs, dir, ref: 'ticket/62281', object: bornAt });
+	gitOk(['branch', 'ticket/62281', bornAt], dir);
 	fs.writeFileSync(path.join(dir, 'upstream.txt'), 'landed later\n');
-	await git.add({ fs, dir, filepath: 'upstream.txt' });
-	const trunkNow = await git.commit({ fs, dir, message: 'trunk today', author });
-	await git.checkout({ fs, dir, ref: 'ticket/62281', force: true });
+	const trunkNow = commitFiles(dir, ['upstream.txt'], 'trunk today');
+	gitOk(['checkout', '--force', 'ticket/62281'], dir);
 	fs.writeFileSync(path.join(dir, 'text.txt'), 'line1\nthe contributor\n');
 
 	const buildProvenanceHeader = spy(() => '# header\n\n');
@@ -1433,8 +1423,8 @@ test('git:save-patch with handoff dates the header from the branch base, not the
 	assert.equal(details.trunkOid, bornAt, 'the header names the base the patch was diffed against');
 	assert.notEqual(details.trunkOid, trunkNow);
 
-	const { commit } = await git.readCommit({ fs, dir, oid: bornAt });
-	assert.equal(details.trunkDate, new Date(commit.committer.timestamp * 1000).toISOString());
+	const { committerTimestamp } = commitMeta(dir, bornAt);
+	assert.equal(details.trunkDate, new Date(committerTimestamp * 1000).toISOString());
 	assert.notEqual(details.trunkDate, '2026-08-08T09:00:00.000Z', 'the site record dates a different commit');
 });
 
@@ -2185,12 +2175,10 @@ test('git:preview-patch stays quiet about files the ticket never touched (#301)'
 async function movedOnTrunkRepo(t) {
 	const repo = await parkedTicketRepo(t, { workFile: 'src/wp-login.php' });
 	const { dir } = repo;
-	const author = { name: 'test', email: 'test@example.com' };
-	await git.checkout({ fs, dir, ref: 'trunk' });
+	gitOk(['checkout', 'trunk'], dir);
 	fs.writeFileSync(path.join(dir, 'src', 'wp-signup.php'), '<?php // signup\n');
-	await git.add({ fs, dir, filepath: 'src/wp-signup.php' });
-	await git.commit({ fs, dir, message: 'trunk moves on', author });
-	await git.checkout({ fs, dir, ref: 'ticket/62281' });
+	commitFiles(dir, ['src/wp-signup.php'], 'trunk moves on');
+	gitOk(['checkout', 'ticket/62281'], dir);
 	return repo;
 }
 
@@ -2214,7 +2202,7 @@ test('git:preview-patch refuses a ticket with no recorded base (#308)', async (t
 // morning's work. It has to fail instead.
 async function unreadableBaseRepo(t) {
 	const repo = await parkedTicketRepo(t, { workFile: 'src/wp-login.php' });
-	await git.deleteBranch({ fs, dir: repo.dir, ref: 'trunk' });
+	gitOk(['branch', '-D', 'trunk'], repo.dir);
 	return repo;
 }
 
@@ -3526,24 +3514,19 @@ async function carriedWork(event, budgetMs = 4000) {
 // One repo shape both #234 tests need: a committed trunk with an edited file
 // and an untracked one on top of it.
 function dirtyTrunkFixture(t, prefix) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	return (async () => {
-		await git.init({ fs, dir, defaultBranch: 'trunk' });
-		fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
-		fs.writeFileSync(path.join(dir, 'wp-comments-post.php'), '<?php // trunk\n');
-		await git.add({ fs, dir, filepath: ['wp-login.php', 'wp-comments-post.php'] });
-		await git.commit({ fs, dir, message: 'trunk', author: { name: 't', email: 't@e' } });
-		fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work started before the ticket was known\n');
-		fs.writeFileSync(path.join(dir, 'brand-new.php'), '<?php // and a new file\n');
-		return dir;
-	})();
+	const dir = adoptedRepo(t, prefix);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
+	fs.writeFileSync(path.join(dir, 'wp-comments-post.php'), '<?php // trunk\n');
+	commitFiles(dir, ['wp-login.php', 'wp-comments-post.php'], 'trunk');
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work started before the ticket was known\n');
+	fs.writeFileSync(path.join(dir, 'brand-new.php'), '<?php // and a new file\n');
+	return dir;
 }
 
 // The ask itself (#234): the same gesture that used to move the work asks
 // first, moves nothing, and records nothing — Cancel has to cost zero.
 test('sites:set-ticket asks before carrying loose trunk work into a new ticket (issue #234)', async (t) => {
-	const dir = await dirtyTrunkFixture(t, 'ipc-wiring-ask-');
+	const dir = dirtyTrunkFixture(t, 'ipc-wiring-ask-');
 	const settings = fakeSettingsStore({ sites: [dir], siteMeta: { [dir]: {} } });
 	const main = loadMain({ stubs: { ...silentLogging(), ...settings.stubs } });
 
@@ -3558,13 +3541,13 @@ test('sites:set-ticket asks before carrying loose trunk work into a new ticket (
 
 	// Asked, not half-done: still on trunk, no branch, nothing recorded.
 	assert.equal(await require('../../src/ticket-branches.js').currentBranchName(dir), 'trunk');
-	assert.equal((await git.listBranches({ fs, dir })).includes('ticket/62281'), false);
+	assert.equal(listBranches(dir).includes('ticket/62281'), false);
 	assert.equal(settings.values.siteMeta[dir].tracTicket, undefined);
 	assert.equal(await carriedWork(event, 300), null, 'nothing was carried, so nothing is claimed');
 });
 
 test('sites:set-ticket says how much loose work the chosen carry took into a new ticket (issue #108/#234)', async (t) => {
-	const dir = await dirtyTrunkFixture(t, 'ipc-wiring-carry-');
+	const dir = dirtyTrunkFixture(t, 'ipc-wiring-carry-');
 	const settings = fakeSettingsStore({ sites: [dir], siteMeta: { [dir]: {} } });
 	const main = loadMain({ stubs: { ...silentLogging(), ...settings.stubs } });
 
@@ -3588,12 +3571,9 @@ test('sites:set-ticket says how much loose work the chosen carry took into a new
 });
 
 test('nothing loose means nothing is claimed (issue #108)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-carry-clean-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-carry-clean-');
 	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
-	await git.add({ fs, dir, filepath: 'wp-login.php' });
-	await git.commit({ fs, dir, message: 'trunk', author: { name: 't', email: 't@e' } });
+	commitFiles(dir, ['wp-login.php'], 'trunk');
 
 	const settings = fakeSettingsStore({ sites: [dir], siteMeta: { [dir]: {} } });
 	const main = loadMain({ stubs: { ...silentLogging(), ...settings.stubs } });
@@ -4279,21 +4259,15 @@ test('github:sign-in-cancel during the account lookup wins: nothing is signed in
 // pull request would have carried no files at all, and the commit it asked
 // GitHub to build on would have been a commit GitHub has never seen.
 test('github:open-pr builds on the branch point, not on the parked WIP commit (issues #108, #167)', async (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-pr-base-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	const author = { name: 'test', email: 'test@example.com' };
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
+	const dir = adoptedRepo(t, 'ipc-wiring-pr-base-');
 	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n');
-	await git.add({ fs, dir, filepath: 'wp-login.php' });
-	const bornAt = await git.commit({ fs, dir, message: 'trunk', author });
+	const bornAt = commitFiles(dir, ['wp-login.php'], 'trunk');
 
 	// The ticket branch, with its work already parked as a WIP commit — the
 	// state a contributor is in every time they come back to a ticket.
-	await git.branch({ fs, dir, ref: 'ticket/62281', object: bornAt });
-	await git.checkout({ fs, dir, ref: 'ticket/62281', force: true });
+	gitOk(['checkout', '-b', 'ticket/62281', bornAt], dir);
 	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // the contribution\n');
-	await git.add({ fs, dir, filepath: 'wp-login.php' });
-	await git.commit({ fs, dir, message: 'wip', author, parent: [bornAt] });
+	commitFiles(dir, ['wp-login.php'], 'wip');
 
 	const auth = fakeGithubAuth({ login: 'janedoe' });
 	const openPullRequest = spy(async () => ({ ok: true, url: 'u', number: 9, branch: 'trac-62281', exactBase: true }));

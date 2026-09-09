@@ -5,32 +5,23 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const git = require('isomorphic-git');
 const JsDiff = require('diff');
 const { applyPatchToDir, rollback, snapshotFiles, diagnoseHunks } = require('../../src/patch-apply');
 const { parsePatchFiles } = require('../../src/patch-plan.cjs');
+const { gitOk, initRepo, commitFiles, tempDir } = require('./helpers/git.cjs');
 
-// A real on-disk repo, shaped like a site the app cloned (`core.autocrlf`
-// pinned, so the tree stays LF on Windows and the byte-for-byte assertions
-// mean the same on every platform): the applier hands the patch to the
-// bundled Git, which wants a repository to apply into (and refuses paths
-// outside it). `adopted: true` leaves the config unwritten instead, the shape
-// a host Git left behind, which is the one case the CRLF view is about.
-async function makeRepo(t, files, { adopted = false } = {}) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-test-'));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	await git.init({ fs, dir, defaultBranch: 'trunk' });
-	if (!adopted) await git.setConfig({ fs, dir, path: 'core.autocrlf', value: false });
+// A real on-disk repo, shaped the way the app's clone shapes one: the applier
+// hands the patch to the bundled Git, which wants a repository to apply into
+// (and refuses paths outside it). `autocrlf: null` builds instead the shape a
+// host Git left behind, which is the one case the CRLF view below is about.
+function makeRepo(t, files, { autocrlf = 'false' } = {}) {
+	const dir = initRepo(tempDir(t, 'patch-apply-test-'), { autocrlf });
 	for (const [relPath, content] of Object.entries(files)) {
 		const abs = path.join(dir, relPath);
 		fs.mkdirSync(path.dirname(abs), { recursive: true });
 		fs.writeFileSync(abs, content);
-		await git.add({ fs, dir, filepath: relPath });
 	}
-	await git.commit({
-		fs, dir, message: 'base',
-		author: { name: 'Test', email: 'test@example.com' }
-	});
+	commitFiles(dir, Object.keys(files), 'base');
 	return dir;
 }
 
@@ -77,7 +68,7 @@ const BAR_PATCH_THAT_FAILS = `diff --git a/${BAR} b/${BAR}
 `;
 
 test('applyPatchToDir: a single-file patch applies (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const res = await applyPatchToDir({ dir, patchText: FOO_PATCH });
 	assert.strictEqual(res.ok, true);
 	assert.deepStrictEqual(res.applied, [FOO]);
@@ -87,7 +78,7 @@ test('applyPatchToDir: a single-file patch applies (issue #11)', async (t) => {
 // The rule the whole module is built around. A patch where the second file
 // fails must not leave the first one rewritten.
 test('applyPatchToDir: one failing file leaves the whole tree untouched (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
 	const before = snapshot(dir);
 
 	const res = await applyPatchToDir({ dir, patchText: FOO_PATCH + BAR_PATCH_THAT_FAILS });
@@ -99,7 +90,7 @@ test('applyPatchToDir: one failing file leaves the whole tree untouched (issue #
 });
 
 test('applyPatchToDir: reverting restores the original content (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	await applyPatchToDir({ dir, patchText: FOO_PATCH });
 	const res = await applyPatchToDir({ dir, patchText: FOO_PATCH, reverse: true });
 	assert.strictEqual(res.ok, true);
@@ -109,7 +100,7 @@ test('applyPatchToDir: reverting restores the original content (issue #11)', asy
 // Reverting must undo the patch, not reset the checkout: work the contributor
 // did on other files has to survive.
 test('applyPatchToDir: reverting keeps unrelated local work (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
 	await applyPatchToDir({ dir, patchText: FOO_PATCH });
 	fs.writeFileSync(path.join(dir, BAR), 'my own work\n');
 
@@ -125,7 +116,7 @@ test('applyPatchToDir: reverting keeps unrelated local work (issue #11)', async 
 // moved on" sends the contributor looking for a change that is not there, and
 // leaves them unable to revert or to apply anything else.
 test('applyPatchToDir: reverting a patch that is no longer in the tree reports it as gone (issue #183)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	await applyPatchToDir({ dir, patchText: FOO_PATCH });
 	fs.writeFileSync(path.join(dir, FOO), FOO_BODY); // the reset
 	const before = snapshot(dir);
@@ -143,7 +134,7 @@ test('applyPatchToDir: reverting a patch that is no longer in the tree reports i
 // conflict, and clearing the record for it would strand a patch that is still
 // in the tree.
 test('applyPatchToDir: a file edited since the patch is still a conflict, not a missing patch (issue #183)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	await applyPatchToDir({ dir, patchText: FOO_PATCH });
 	fs.writeFileSync(path.join(dir, FOO), 'ONE\nTWO\nTHREE\n');
 
@@ -167,7 +158,7 @@ test('applyPatchToDir: a half-present patch stays a conflict (issue #183)', asyn
 +BETA
  gamma
 `;
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
 	const applied = await applyPatchToDir({ dir, patchText: twoFilePatch });
 	assert.strictEqual(applied.ok, true);
 	fs.writeFileSync(path.join(dir, FOO), FOO_BODY); // only one file reset
@@ -197,7 +188,7 @@ test('applyPatchToDir: repeated context does not make a still-applied patch look
 +TWO
  y
 `;
-	const dir = await makeRepo(t, { [AMBIGUOUS]: body, [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [AMBIGUOUS]: body, [FOO]: FOO_BODY });
 	const twoFilePatch = `${patch}${FOO_PATCH}`;
 	assert.strictEqual((await applyPatchToDir({ dir, patchText: twoFilePatch })).ok, true);
 	fs.writeFileSync(path.join(dir, FOO), FOO_BODY); // only the unambiguous file is reset
@@ -213,7 +204,7 @@ test('applyPatchToDir: repeated context does not make a still-applied patch look
 // Added files survive a forced checkout, so an add is the kind most likely to
 // still be there when the modify beside it has been reset.
 test('applyPatchToDir: an added file still present keeps the patch from reading as absent (issue #183)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const addAndModify = `${FOO_PATCH}diff --git a/src/added.php b/src/added.php
 new file mode 100644
 --- /dev/null
@@ -232,7 +223,7 @@ new file mode 100644
 });
 
 test('applyPatchToDir: a patch creates and removes files (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const addPatch = `diff --git a/src/new.php b/src/new.php
 new file mode 100644
 --- /dev/null
@@ -252,7 +243,7 @@ new file mode 100644
 
 // A patch is untrusted input downloaded from a ticket.
 test('applyPatchToDir: a path escaping the site folder is refused (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const outside = path.join(dir, '..', 'escaped.txt');
 	const evil = `diff --git a/../escaped.txt b/../escaped.txt
 new file mode 100644
@@ -268,7 +259,7 @@ new file mode 100644
 });
 
 test('applyPatchToDir: a missing target file fails without writing (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const before = snapshot(dir);
 	const res = await applyPatchToDir({ dir, patchText: BAR_PATCH_THAT_FAILS });
 	assert.strictEqual(res.ok, false);
@@ -277,7 +268,7 @@ test('applyPatchToDir: a missing target file fails without writing (issue #11)',
 });
 
 test('applyPatchToDir: binary files are skipped and named, not silently dropped (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const withBinary = FOO_PATCH + `diff --git a/src/x.png b/src/x.png
 index 111..222 100644
 Binary files a/src/x.png and b/src/x.png differ
@@ -293,20 +284,19 @@ Binary files a/src/x.png and b/src/x.png differ
 // Git's to apply now; only the data-less "Binary files differ" line is
 // still skipped and named.
 test('applyPatchToDir: a binary file whose section carries its data is applied (#385)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]);
 	// Made by the bundled Git in a scratch repository, so the section is the
 	// real shape rather than a hand-typed one.
-	const { git: bin, tempDir } = require('./helpers/git.cjs');
 	const scratch = tempDir(t, 'patch-apply-binary-');
-	bin(['init', '-q', '-b', 'trunk'], scratch);
+	gitOk(['init', '-q', '-b', 'trunk'], scratch);
 	fs.mkdirSync(path.join(scratch, 'src', 'images'), { recursive: true });
 	fs.writeFileSync(path.join(scratch, 'src', 'images', 'dot.png'), bytes);
-	bin(['add', '-A'], scratch);
+	gitOk(['add', '-A'], scratch);
 	// Through a file, not stdout: the helper trims stdout and the blank line
 	// that closes the base85 data is part of the format.
 	const out = path.join(scratch, 'binary.diff');
-	bin(['diff', '--cached', '--binary', '--output', out], scratch);
+	gitOk(['diff', '--cached', '--binary', '--output', out], scratch);
 	const patchText = fs.readFileSync(out, 'utf8');
 
 	const res = await applyPatchToDir({ dir, patchText });
@@ -326,7 +316,7 @@ test('applyPatchToDir: a binary file whose section carries its data is applied (
 // do and nothing wrong with it: it succeeds with its skips named, as it did
 // before the move to `git apply`, and the record main.js writes is honest.
 test('applyPatchToDir: a patch that is only data-less binaries succeeds with them named, not refused (#385)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const before = snapshot(dir);
 	const binaryOnly = `diff --git a/src/x.png b/src/x.png
 index 111..222 100644
@@ -342,7 +332,7 @@ Binary files a/src/x.png and b/src/x.png differ
 // Two sections on one file pass their own check and fail together: the one
 // place Git's own last line is what the contributor reads.
 test('applyPatchToDir: a patch Git refuses only as a whole names Git\'s reason (#385)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const deleteThenEdit = `diff --git a/${FOO} b/${FOO}
 deleted file mode 100644
 --- a/${FOO}
@@ -360,7 +350,7 @@ ${FOO_PATCH}`;
 });
 
 test('applyPatchToDir: a rename whose destination already exists is refused by name (#385)', async (t) => {
-	const dir = await makeRepo(t, { 'src/old.php': 'one\n', 'src/new.php': 'taken\n' });
+	const dir = makeRepo(t, { 'src/old.php': 'one\n', 'src/new.php': 'taken\n' });
 	const rename = `diff --git a/src/old.php b/src/new.php
 similarity index 100%
 rename from src/old.php
@@ -373,7 +363,7 @@ rename to src/new.php
 });
 
 test('applyPatchToDir: an unreadable patch reports why and changes nothing (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const before = snapshot(dir);
 	const res = await applyPatchToDir({ dir, patchText: 'this is not a patch\n' });
 	assert.strictEqual(res.ok, false);
@@ -391,7 +381,7 @@ test('applyPatchToDir: a write failing partway through is rolled back (issue #11
 	// src/blocker is a regular file, so creating src/blocker/new.php fails with
 	// ENOTDIR — deterministically, on every platform — after foo.php has
 	// already been written.
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY, 'src/blocker': 'not a directory\n' });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY, 'src/blocker': 'not a directory\n' });
 	const before = snapshot(dir);
 
 	const blockedAdd = `diff --git a/src/blocker/new.php b/src/blocker/new.php
@@ -410,7 +400,7 @@ new file mode 100644
 });
 
 test('applyPatchToDir: a rename moves the file and its content (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { 'src/old.php': 'one\ntwo\n' });
+	const dir = makeRepo(t, { 'src/old.php': 'one\ntwo\n' });
 	const renamePatch = `diff --git a/src/old.php b/src/new.php
 similarity index 90%
 rename from src/old.php
@@ -435,7 +425,7 @@ rename to src/new.php
 // A 100%-similarity rename has no hunks at all, which used to be rejected as
 // "not a patch" — killing the whole apply for any PR that moved a file.
 test('applyPatchToDir: a pure rename with no hunks applies (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { 'src/old.php': 'unchanged\n' });
+	const dir = makeRepo(t, { 'src/old.php': 'unchanged\n' });
 	const purePatch = `diff --git a/src/old.php b/src/new.php
 similarity index 100%
 rename from src/old.php
@@ -448,7 +438,7 @@ rename to src/new.php
 });
 
 test('applyPatchToDir: reverting a deletion puts the file back (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { 'src/old.php': 'one\ntwo\n' });
+	const dir = makeRepo(t, { 'src/old.php': 'one\ntwo\n' });
 	const deletePatch = `diff --git a/src/old.php b/src/old.php
 deleted file mode 100644
 --- a/src/old.php
@@ -474,7 +464,7 @@ deleted file mode 100644
 // same file is refused, which is the documented limit of the move to
 // `git apply` (a site the app cloned is LF, so it never meets it).
 test('applyPatchToDir: an LF patch fits a CRLF file under the Windows view, and is refused without it (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY.replace(/\n/g, '\r\n') }, { adopted: true });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY.replace(/\n/g, '\r\n') }, { autocrlf: null });
 	const refused = await applyPatchToDir({ dir, patchText: FOO_PATCH, platform: 'darwin' });
 	assert.strictEqual(refused.ok, false);
 	assert.strictEqual(fs.readFileSync(path.join(dir, FOO), 'utf8'), 'one\r\ntwo\r\nthree\r\n', 'nothing written');
@@ -487,7 +477,7 @@ test('applyPatchToDir: an LF patch fits a CRLF file under the Windows view, and 
 // Git refuses a path beyond a symbolic link on its own; the sentence the
 // contributor reads is this module's, and it has to say where it pointed.
 test('applyPatchToDir: a patch through a symlinked directory is refused (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-outside-'));
 	t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
 	fs.symlinkSync(outside, path.join(dir, 'escape-hatch'), 'dir');
@@ -510,7 +500,7 @@ new file mode 100644
 // lexical path — which writeFileSync would then follow out of the tree. lstat
 // closes that hole. (Copilot #1.)
 test('applyPatchToDir: an add through a dangling symlink out of the tree is refused (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-apply-dangling-'));
 	t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }));
 	const outside = path.join(outsideDir, 'target.txt'); // never created → dangling
@@ -534,7 +524,7 @@ new file mode 100644
 // string back would corrupt it — the bytes must survive intact. (Copilot #5.)
 test('applyPatchToDir: a pure rename preserves non-utf8 (binary) bytes (issue #11)', async (t) => {
 	const bytes = Buffer.from([0xff, 0xfe, 0x00, 0x01, 0x80, 0x0a]);
-	const dir = await makeRepo(t, { 'src/logo.bin': bytes });
+	const dir = makeRepo(t, { 'src/logo.bin': bytes });
 	const purePatch = `diff --git a/src/logo.bin b/src/moved.bin
 similarity index 100%
 rename from src/logo.bin
@@ -550,7 +540,7 @@ rename to src/moved.bin
 // edited the file after previewing, deleting it anyway silently discards their
 // work; all-or-nothing means failing instead. (Copilot #2.)
 test('applyPatchToDir: deleting a file edited since the patch fails all-or-nothing (issue #11)', async (t) => {
-	const dir = await makeRepo(t, { 'src/old.php': 'one\ntwo\n' });
+	const dir = makeRepo(t, { 'src/old.php': 'one\ntwo\n' });
 	const deletePatch = `diff --git a/src/old.php b/src/old.php
 deleted file mode 100644
 --- a/src/old.php
@@ -575,7 +565,7 @@ deleted file mode 100644
 // ever claimed was empty, contributor's work and all. `git apply` refuses this
 // as "removal patch leaves file contents"; so must this.
 test('applyPatchToDir: an empty-file deletion refuses a file that has content (#311)', async (t) => {
-	const dir = await makeRepo(t, { 'src/placeholder.php': '' });
+	const dir = makeRepo(t, { 'src/placeholder.php': '' });
 	const deletePatch = `diff --git a/src/placeholder.php b/src/placeholder.php
 deleted file mode 100644
 --- a/src/placeholder.php
@@ -593,7 +583,7 @@ deleted file mode 100644
 
 // And it still removes the file it does describe.
 test('applyPatchToDir: an empty-file deletion removes the empty file (#311)', async (t) => {
-	const dir = await makeRepo(t, { 'src/placeholder.php': '' });
+	const dir = makeRepo(t, { 'src/placeholder.php': '' });
 	const deletePatch = `diff --git a/src/placeholder.php b/src/placeholder.php
 deleted file mode 100644
 --- a/src/placeholder.php
@@ -612,7 +602,7 @@ deleted file mode 100644
 // The mix — an ordinary edit alongside the empty add and delete — is the case
 // that used to fail whole-patch, so every file's fate is asserted.
 test('applyPatchToDir: a git-authored patch with empty adds and deletes applies whole (#316)', async (t) => {
-	const dir = await makeRepo(t, { 'edited.php': 'line1\nline2\n', 'was-empty.php': '' });
+	const dir = makeRepo(t, { 'edited.php': 'line1\nline2\n', 'was-empty.php': '' });
 	const gitPatch = `diff --git a/edited.php b/edited.php
 index c0d0fb4..83db48f 100644
 --- a/edited.php
@@ -642,7 +632,7 @@ index e69de29..0000000
 // claims the file does not exist yet, so one already in the checkout — with
 // whatever content — is refused all-or-nothing, not overwritten or skipped.
 test('applyPatchToDir: a git-authored empty addition refuses a file that already exists (#316)', async (t) => {
-	const dir = await makeRepo(t, { 'placeholder.php': 'my own work\n' });
+	const dir = makeRepo(t, { 'placeholder.php': 'my own work\n' });
 	const before = snapshot(dir);
 	const addPatch = `diff --git a/placeholder.php b/placeholder.php
 new file mode 100644
@@ -661,7 +651,7 @@ index 0000000..e69de29
 // mutations is what lets rollback see a half-done one. (Copilot #3.)
 // Same injection as above, so the same Windows skip (#413).
 test('applyPatchToDir: a later failure rolls a completed rename fully back (issue #11)', { skip: process.platform === 'win32' && '#413' }, async (t) => {
-	const dir = await makeRepo(t, { 'src/old.php': 'one\ntwo\n', 'src/blocker': 'not a directory\n' });
+	const dir = makeRepo(t, { 'src/old.php': 'one\ntwo\n', 'src/blocker': 'not a directory\n' });
 	const before = snapshot(dir);
 	const renameThenBlocked = `diff --git a/src/old.php b/src/new.php
 similarity index 100%
@@ -759,7 +749,7 @@ const LONG_PATCH = `diff --git a/${LONG} b/${LONG}
 `;
 
 test('applyPatchToDir: names how many regions missed, not just the file (issue #282)', async (t) => {
-	const dir = await makeRepo(t, { [LONG]: LONG_BODY });
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
 	// Only the first region's surroundings are disturbed.
 	fs.writeFileSync(path.join(dir, LONG), LONG_BODY.replace('line 1\n', 'line one, rewritten\n'));
 
@@ -779,7 +769,7 @@ test('applyPatchToDir: names how many regions missed, not just the file (issue #
 });
 
 test('applyPatchToDir: a region carries the lines it was trying to change (issue #282)', async (t) => {
-	const dir = await makeRepo(t, { [LONG]: LONG_BODY });
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
 	fs.writeFileSync(path.join(dir, LONG), LONG_BODY.replace('line 1\n', 'line one, rewritten\n'));
 
 	const res = await applyPatchToDir({ dir, patchText: LONG_PATCH });
@@ -795,7 +785,7 @@ test('applyPatchToDir: a region carries the lines it was trying to change (issue
 // "moved" region the `-` line is the one thing known to still be in the file —
 // the failure means the *neighbours* changed, not it.
 test('applyPatchToDir: a region\'s anchor is a line still present in the checkout (issue #282)', async (t) => {
-	const dir = await makeRepo(t, { [LONG]: LONG_BODY });
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
 	const drifted = LONG_BODY.replace('line 1\n', 'line one, rewritten\n');
 	fs.writeFileSync(path.join(dir, LONG), drifted);
 
@@ -810,7 +800,7 @@ test('applyPatchToDir: a region\'s anchor is a line still present in the checkou
 // line is gone from the file by definition, and the `+` line is what a search
 // will actually hit.
 test('applyPatchToDir: an already-applied region anchors on its result (issue #226)', async (t) => {
-	const dir = await makeRepo(t, { [LONG]: LONG_BODY });
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
 	const current = LONG_BODY
 		.replace('line 2\n', 'LINE TWO\n')
 		.replace('line 14\n', 'line fourteen!\n');
@@ -827,7 +817,7 @@ test('applyPatchToDir: an already-applied region anchors on its result (issue #2
 // its change is already there, which means the patch is redundant rather than
 // stale — the opposite conclusion from the same failure.
 test('applyPatchToDir: a region already in the tree is told apart from one that drifted (issue #226)', async (t) => {
-	const dir = await makeRepo(t, { [LONG]: LONG_BODY });
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
 	const current = LONG_BODY
 		.replace('line 2\n', 'LINE TWO\n')          // the patch's own change, already here
 		.replace('line 14\n', 'line fourteen!\n');  // and genuine drift around another region
@@ -844,7 +834,7 @@ test('applyPatchToDir: a region already in the tree is told apart from one that 
 // Every failing file reaches the caller. The panel showed `error` alone and
 // sent the rest to the terminal, where a contributor has no reason to look.
 test('applyPatchToDir: a second conflicting file is reported, not swallowed (issue #282)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY, [BAR]: BAR_BODY });
 	const twoFilePatch = `${FOO_PATCH}diff --git a/${BAR} b/${BAR}
 --- a/${BAR}
 +++ b/${BAR}
@@ -867,7 +857,7 @@ test('applyPatchToDir: a second conflicting file is reported, not swallowed (iss
 // A file that is simply not there has no regions to break down, so it keeps the
 // sentence it always had. The panel has to render both kinds side by side.
 test('applyPatchToDir: a failure with no regions carries no conflict detail (issue #282)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	const missingFilePatch = FOO_PATCH.replace(new RegExp(FOO, 'g'), 'src/wp-includes/gone.php');
 
 	const res = await applyPatchToDir({ dir, patchText: missingFilePatch });
@@ -970,7 +960,7 @@ test('diagnoseHunks: overlapping hunks that each pass alone yield null, not zero
 // A revert that fails now carries the same per-region breakdown a forward apply
 // does, because that is what the panel narrates the absorption from.
 test('applyPatchToDir: a failing reverse reports which regions were edited over (issue #306)', async (t) => {
-	const dir = await makeRepo(t, { [FOO]: FOO_BODY });
+	const dir = makeRepo(t, { [FOO]: FOO_BODY });
 	await applyPatchToDir({ dir, patchText: FOO_PATCH });
 	fs.writeFileSync(path.join(dir, FOO), 'one\nMY OWN VERSION\nthree\n');
 

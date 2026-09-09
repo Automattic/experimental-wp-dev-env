@@ -42,7 +42,7 @@ test( 'an update fetches from the site\'s origin, resets the checkout, rebuilds,
 	// INVARIANT — the checkout is the origin's trunk now, still on trunk, and
 	// the substrate survived the reset.
 	expect( read( site.dir, LOGIN ) ).toBe( NEWER_LOGIN );
-	expect( await currentBranch( site.dir ) ).toBe( TRUNK );
+	expect( currentBranch( site.dir ) ).toBe( TRUNK );
 	expect( read( site.dir, SUBSTRATE ) ).toBe( SUBSTRATE_CONTENT );
 
 	// INVARIANT — the update fetched, it did not truncate: no shallow boundary,

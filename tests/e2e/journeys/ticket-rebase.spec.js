@@ -71,7 +71,7 @@ test( 'the notice moves the ticket onto the current trunk in one click, keeping 
 	expect( read( site.dir, LOGIN ) ).toBe( MY_LOGIN );
 	expect( read( site.dir, DOOMED ) ).toBe( '<?php // trunk moved this\n' );
 	expect( read( site.dir, SUBSTRATE ) ).toBe( SUBSTRATE_CONTENT );
-	expect( await currentBranch( site.dir ) ).toBe( `ticket/${ TICKET }` );
+	expect( currentBranch( site.dir ) ).toBe( `ticket/${ TICKET }` );
 
 	// CHARACTERISATION — the registry holds the new base.
 	const meta = session.readSettings().siteMeta[ site.dir ];

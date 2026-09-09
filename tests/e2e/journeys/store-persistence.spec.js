@@ -55,7 +55,7 @@ test( 'the linked ticket and its work are still there after a restart', async ( 
 
 	// INVARIANT — and it did not touch the checkout on the way past. A restart is
 	// not a switch.
-	expect( await currentBranch( site.dir ) ).toBe( 'ticket/60001' );
+	expect( currentBranch( site.dir ) ).toBe( 'ticket/60001' );
 	expect( read( site.dir, LOGIN ) ).toBe( MY_EDIT );
 	expect( read( site.dir, SUBSTRATE ) ).toBe( SUBSTRATE_CONTENT );
 } );

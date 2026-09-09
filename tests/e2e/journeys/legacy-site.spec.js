@@ -27,7 +27,7 @@ test( 'a site the old engine made is read, refused on every write, and can still
 	await page.getByLabel( 'Trac ticket number or URL' ).first().fill( '60001' );
 	await page.getByRole( 'button', { name: 'Link ticket', exact: true } ).first().click();
 	await expect( page.getByRole( 'alert' ).filter( { hasText: 'earlier version of the app' } ).first() ).toBeVisible( { timeout: 30_000 } );
-	expect( await branches( site.dir ) ).not.toContain( 'ticket/60001' );
+	expect( branches( site.dir ) ).not.toContain( 'ticket/60001' );
 	expect( exists( site.dir, LOGIN ) ).toBe( true );
 
 	// INVARIANT — the way out is one click away: the banner opens the create

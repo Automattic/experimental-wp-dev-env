@@ -90,8 +90,8 @@ const LOCAL_EXCLUDES = [
 /**
  * Seeds per-site ignores for machine-local files that must never become part
  * of a contribution. This lives in `.git/info/exclude`, not the repository's
- * `.gitignore`: the checkout stays unchanged and isomorphic-git reads these
- * rules when it builds a status matrix (issue #19).
+ * `.gitignore`: the checkout stays unchanged and Git reads these rules on
+ * every status the app runs (issue #19).
  *
  * The marker is the ownership boundary. Once present, the contributor may
  * edit or remove the rules below it and the app will not restore them.
