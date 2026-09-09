@@ -78,7 +78,7 @@ How the app works from a user's point of view — the toolchain it bundles, keep
 
 - Integrate Playground's XDebug.
 - Explore bundling MySQL server with the app.
-- Migrate to the PHP Git client in https://github.com/wordpress/php-toolkit.
+- Finish moving every Git flow onto the bundled Git binary (https://github.com/WordPress/contributor-toolkit/issues/364).
 - Potentially integrate with Studio to benefit from PHP version selector, wp-cli integration and other Studio features.
 - An ergonomic way of managing the git repository from the UI (commit, conflicts, pushes etc.) Or would it make sense to just endorse another git client?
 

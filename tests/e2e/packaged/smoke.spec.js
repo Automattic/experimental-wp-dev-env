@@ -118,7 +118,7 @@ const EXPECTED_API_KEYS = [
  * requires it. Excluding Windows today would skip the one failure this
  * assertion exists to catch, on the platform where it is most likely.
  */
-const REQUIRED_MODULES = [ '@wp-playground/cli', 'fs-ext-extra-prebuilt' ];
+const REQUIRED_MODULES = [ '@wp-playground/cli', 'fs-ext-extra-prebuilt', 'dugite' ];
 
 /**
  * electron-builder names the output directory after the platform *and* arch, so
@@ -270,3 +270,82 @@ for ( const moduleName of REQUIRED_MODULES ) {
 		expect( resolved.path ).toBeTruthy();
 	} );
 }
+
+/**
+ * The bundled Git (#383) is the first binary this app executes out of its own
+ * bundle, and the first `asarUnpack` rule in package.json exists for it. Both
+ * can only go wrong here: `npm ci` and packaging exit 0 whether or not the
+ * tree was unpacked, kept its exec bits, or kept the helpers `git` shells out
+ * to. Resolved through src/git-binary.cjs inside the packaged main process,
+ * exactly as a caller will once one exists. Offline, and it writes nothing.
+ */
+test( 'the packaged app can spawn the bundled Git', async () => {
+	const result = await electronApp.evaluate( ( { app } ) => {
+		const nodeRequire = process.mainModule ? process.mainModule.require : require;
+		const { createRequire } = nodeRequire( 'module' );
+		const { join } = nodeRequire( 'path' );
+		const appFs = nodeRequire( 'fs' );
+		const { spawnSync } = nodeRequire( 'child_process' );
+		const req = createRequire( join( app.getAppPath(), 'package.json' ) );
+		const { resolveGitBinary, buildGitEnv, BASE_ARGS, SPAWN_OPTIONS } = req( './src/git-binary.cjs' );
+
+		const binary = resolveGitBinary();
+		const env = buildGitEnv();
+		const run = ( args ) => {
+			const r = spawnSync( binary, [ ...BASE_ARGS, ...args ], { ...SPAWN_OPTIONS, env, encoding: 'utf8' } );
+			return {
+				status: r.status,
+				stdout: ( r.stdout || '' ).trim(),
+				stderr: ( r.stderr || '' ).trim(),
+				error: r.error ? String( r.error.message ) : null,
+			};
+		};
+		const version = run( [ '--version' ] );
+		const execPath = run( [ '--exec-path' ] );
+
+		return {
+			binary,
+			binaryExists: appFs.existsSync( binary ),
+			version,
+			execPath,
+			execPathExists: execPath.status === 0 && appFs.existsSync( execPath.stdout ),
+		};
+	} );
+
+	// A path still inside app.asar means the unpack rule did not apply, and
+	// the binary would fail to spawn for a reason unrelated to Git.
+	expect( result.binary, 'resolved into app.asar rather than app.asar.unpacked' ).toContain( 'app.asar.unpacked' );
+	expect( result.binaryExists, `${ result.binary } is not on disk` ).toBe( true );
+	expect( result.version, JSON.stringify( result.version ) ).toHaveProperty( 'status', 0 );
+	expect( result.version.stdout ).toMatch( /^git version 2\.53\.0(?:$|[.\s])/ );
+	expect( result.execPathExists, `exec path ${ result.execPath.stdout } is missing` ).toBe( true );
+} );
+
+test( 'the packaged Git tree carries neither the credential manager nor git-lfs', () => {
+	// The trim in package.json's `files` removes ~120 MB the app cannot reach:
+	// every fetch it makes is anonymous over public HTTPS. `files` filters
+	// what goes into the asar and, through the unpack rule, what comes back
+	// out — so this is where a rewritten glob that stopped matching shows up.
+	// Plain Node fs, rooted at the unpacked tree, on both platforms.
+	const binary = findPackagedBinary();
+	const resourcesDir = process.platform === 'darwin'
+		? path.join( binary, '..', '..', 'Resources' ) // Contents/MacOS/<binary> -> Contents/Resources
+		: path.join( path.dirname( binary ), 'resources' );
+	const gitRoot = path.join( resourcesDir, 'app.asar.unpacked', 'node_modules', 'dugite', 'git' );
+	expect( fs.existsSync( gitRoot ), `${ gitRoot } is missing` ).toBe( true );
+
+	const offenders = [];
+	const walk = ( dir ) => {
+		for ( const entry of fs.readdirSync( dir, { withFileTypes: true } ) ) {
+			const full = path.join( dir, entry.name );
+			if ( /^git-credential-manager|^git-credential-helper-selector|^git-lfs|^createdump|^Avalonia|SkiaSharp|HarfBuzzSharp|^gcmcore|^msalruntime|^av_libglesv2|^(Microsoft|System|Atlassian|GitHub|GitLab|MicroCom)\..*\.dll$/.test( entry.name ) ) {
+				offenders.push( full );
+			} else if ( entry.isDirectory() ) {
+				walk( full );
+			}
+		}
+	};
+	walk( gitRoot );
+
+	expect( offenders ).toEqual( [] );
+} );
