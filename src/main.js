@@ -24,7 +24,7 @@ const {
 	logError
 } = require('./logging');
 const { buildMenuTemplate } = require('./menu');
-const { killChildTree } = require('./kill-tree');
+const { killChildTree, killChildTreeAndWait } = require('./kill-tree');
 const { normalizeEol } = require('./git-update.cjs');
 const { readTrunkInfo, collectDirtyFiles, discardChanges, discardToBase, updateToLatestTrunk } = require('./trunk-update');
 const { applyPatchToDir } = require('./patch-apply');
@@ -287,6 +287,8 @@ const runIdByDirectory = {};
 const installIdByDirectory = {};
 /** @type {Record<string, { child: import('child_process').ChildProcess, url?: string }>} */
 const playgroundServers = {};
+/** @type {Map<string, Set<import('child_process').ChildProcess>>} */
+const runningChildrenByDirectory = new Map();
 // The sites being created right now — liveness, not truth, which is why it is
 // here beside the other per-site maps and not in the store. See
 // setup-tracker.js: a directory exists minutes before its clone finishes, and
@@ -298,6 +300,44 @@ const wpDebugWatchers = {};
 const smtpServers = {};
 /** @type {{ child: import('child_process').ChildProcess, url?: string } | null} */
 let playgroundWebServer = null;
+
+function runningChildrenForSite(sitePath) {
+	return [...new Set([
+		...(runningChildrenByDirectory.get(sitePath) || []),
+		runningGit.get(sitePath),
+		playgroundServers[sitePath]?.child
+	].filter(Boolean))];
+}
+
+function trackDirectoryChild(directoryPath, child) {
+	let children = runningChildrenByDirectory.get(directoryPath);
+	if (!children) {
+		children = new Set();
+		runningChildrenByDirectory.set(directoryPath, children);
+	}
+	children.add(child);
+	child.once('close', () => untrackDirectoryChild(directoryPath, child));
+}
+
+function untrackDirectoryChild(directoryPath, child) {
+	const children = runningChildrenByDirectory.get(directoryPath);
+	if (!children || !child) return;
+	children.delete(child);
+	if (children.size === 0) runningChildrenByDirectory.delete(directoryPath);
+}
+
+async function stopSiteChildren(sitePath) {
+	const children = runningChildrenForSite(sitePath);
+	// Deletion is an explicit stop too. In particular, a cancelled install must
+	// not interpret its non-zero exit as an engine mismatch and restart itself.
+	for (const child of children) cancelledChildren.add(child);
+	const stopped = await Promise.all(children.map((child) => killChildTreeAndWait(child)));
+	if (stopped.some((result) => !result)) {
+		const error = new Error(`A running process for ${sitePath} did not stop within the timeout`);
+		error.code = 'ETIMEDOUT';
+		throw error;
+	}
+}
 
 function smtpStoreKey(sitePath) {
     return `siteMail:${sitePath}`;
@@ -2064,47 +2104,35 @@ ipcMain.handle('sites:mark-initialized', async (_e, sitePath) => {
 // for why. A refusal is logged rather than dropped so a future caller that trips
 // the guard shows up in the log file instead of just doing nothing.
 ipcMain.handle('sites:delete', async (_e, sitePath) => {
-	const s = await getStore();
-	// Filled in by `remove` when the deletion itself fails. Kept outside the
-	// guard call because deleteRegisteredSite's boolean only answers "was this
-	// allowed", and the renderer needs the other half of the story too (#381).
-	let removalError = null;
-	const allowed = await deleteRegisteredSite(sitePath, {
-		sites: s.get('sites'),
-		// A site whose clone is still running is refused outright, registered or
-		// not: `remove` would be deleting a tree the clone is still writing into.
-		pending: setupTracker.paths(),
-		forget: () => {
-			s.set('sites', s.get('sites').filter((p) => p !== sitePath));
-			const meta = s.get('siteMeta');
-			delete meta[sitePath];
-			s.set('siteMeta', meta);
-		},
-		// removeTree handles what plain removal leaves unanswered on the
-		// protected object files a real Git writes: on POSIX, a directory whose
-		// write bit is missing, which nothing else clears; on Windows, an entry
-		// something still holds open, which only a retry budget survives (#381).
-		// A failure is recorded rather than swallowed: `forget` has already
-		// run — deliberately, so a locked directory cannot leave a site stuck
-		// undeletable — which means the one honest thing left to do when the
-		// disk half fails is to say so, in the log and to the caller.
-		remove: async (p) => {
-			try {
+	try {
+		const s = await getStore();
+		const allowed = await deleteRegisteredSite(sitePath, {
+			sites: s.get('sites'),
+			// A site whose clone is still running is refused outright, registered or
+			// not: `remove` would be deleting a tree the clone is still writing into.
+			pending: setupTracker.paths(),
+			forget: () => {
+				s.set('sites', s.get('sites').filter((p) => p !== sitePath));
+				const meta = s.get('siteMeta');
+				delete meta[sitePath];
+				s.set('siteMeta', meta);
+			},
+			// Stop and fully close every child associated with this directory before
+			// removeTree reaches it. Windows keeps a process's cwd locked until then.
+			// removeTree still owns protected Git objects and transient filesystem
+			// failures; only after it succeeds does site-registry forget the site.
+			remove: async (p) => {
+				await stopSiteChildren(p);
 				await removeTree(p);
-			} catch (e) {
-				removalError = e;
-				logError('sites', `deleted ${sitePath} from the registry, but its folder could not be removed and is still on disk: ${String(e && e.stack ? e.stack : e)}`);
-			}
-		},
-		onRefused: (description) => logEvent('sites', `refused to delete ${description} — not a registered site, or still being created`)
-	});
-	if (!allowed) return { ok: false, refused: true };
-	if (removalError) {
-		// Machine-readable on purpose: the sentence the contributor reads is
-		// composed in the renderer (confirmations.cjs), where it is testable.
-		return { ok: false, reason: 'remove-failed', path: sitePath, code: removalError.code };
+			},
+			onRefused: (description) => logEvent('sites', `refused to delete ${description}: not a registered site, or still being created`)
+		});
+		if (!allowed) return { ok: false, refused: true };
+		return { ok: true };
+	} catch (e) {
+		logError('sites', `kept ${sitePath} in the registry because deletion could not safely finish and its folder may still be on disk: ${String(e && e.stack ? e.stack : e)}`);
+		return { ok: false, reason: 'remove-failed', path: sitePath, code: e?.code };
 	}
-	return { ok: true };
 });
 
 ipcMain.handle('sites:set-label', async (_e, sitePath, label) => {
@@ -2675,6 +2703,7 @@ ipcMain.handle('npm:install', async (event, directoryPath) => {
 		register: (child) => {
 			runningInstalls[installId] = child;
 			installIdByDirectory[directoryPath] = installId;
+			trackDirectoryChild(directoryPath, child);
 		},
 		onLog: (type, data) => {
 			event.sender.send('npm:install:log', { installId, type, data });
@@ -2693,6 +2722,7 @@ ipcMain.handle('npm:install', async (event, directoryPath) => {
 				s.set('siteMeta', meta);
 			} catch {}
 			event.sender.send('npm:install:done', { installId, code });
+			untrackDirectoryChild(directoryPath, runningInstalls[installId]);
 			delete runningInstalls[installId];
 			// Guarded on identity: a second install for the same directory has
 			// already claimed the slot, and clearing it blind would leave that
@@ -2724,12 +2754,14 @@ ipcMain.handle('npm:run-script', async (event, directoryPath, scriptName, script
 		register: (child) => {
 			runningScripts[runId] = child;
 			runIdByDirectory[directoryPath] = runId;
+			trackDirectoryChild(directoryPath, child);
 		},
 		onLog: (type, data) => {
 			event.sender.send('npm:run-script:log', { runId, type, data });
 		},
 		onDone: (code) => {
 			event.sender.send('npm:run-script:done', { runId, code });
+			untrackDirectoryChild(directoryPath, runningScripts[runId]);
 			delete runningScripts[runId];
 			if (runIdByDirectory[directoryPath] === runId) {
 				delete runIdByDirectory[directoryPath];

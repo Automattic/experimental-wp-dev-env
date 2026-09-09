@@ -135,3 +135,44 @@ test( 'a native file dialog can be answered from the test', async ( { session } 
 	expect( chosen.name ).toBe( 'engine.patch' );
 	expect( chosen.text ).toContain( 'wp-login.php' );
 } );
+
+test( 'a failed site deletion stays visible, reports the failure, and can be retried (#414)', async ( { session } ) => {
+	const site = makeListedSite( session, 'delete-retry' );
+	const { app, page } = await session.start( site.settings );
+	const confirmsAnswered = await session.acceptConfirms();
+
+	// Hold the IPC reply in the main process. This keeps the UI operation pending
+	// without shipping a test-only delay or relying on filesystem timing.
+	await app.evaluate( ( { ipcMain } ) => {
+		ipcMain.removeHandler( 'sites:delete' );
+		ipcMain.handle( 'sites:delete', ( _event, sitePath ) => new Promise( ( resolve ) => {
+			globalThis.__toolkitDeleteRequest = { resolve, sitePath };
+		} ) );
+	} );
+
+	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
+	await page.getByRole( 'menuitem', { name: 'Delete this site', exact: true } ).click();
+
+	// The row speaks while the call is outstanding, and the only delete action is
+	// disabled so a second request cannot race the first one.
+	await expect( page.getByText( 'Deleting…', { exact: true } ) ).toBeVisible();
+	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
+	await expect( page.getByRole( 'menuitem', { name: 'Deleting…', exact: true } ) ).toBeDisabled();
+	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
+
+	await app.evaluate( () => {
+		const request = globalThis.__toolkitDeleteRequest;
+		if ( ! request ) throw new Error( 'The renderer never reached sites:delete' );
+		request.resolve( { ok: false, reason: 'remove-failed', path: request.sitePath, code: 'EBUSY' } );
+	} );
+
+	const failure = `The site is still listed because its folder could not be deleted (EBUSY). Close anything using it, then try again. Folder: ${ site.dir }`;
+	await expect( page.getByText( failure, { exact: true } ) ).toBeVisible();
+	await expect( sidebarEntry( page, 'delete-retry' ) ).toBeVisible();
+	await expect( page.getByText( 'Deleting…', { exact: true } ) ).toHaveCount( 0 );
+
+	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
+	await expect( page.getByRole( 'menuitem', { name: 'Delete this site', exact: true } ) ).toBeEnabled();
+	expect( await confirmsAnswered() ).toBe( 1 );
+	expect( session.readSettings().sites ).toEqual( [ site.dir ] );
+} );
