@@ -30,7 +30,8 @@ const {
 	startTicketBranch,
 	switchToBranch,
 	deleteTicketBranch,
-	resumeSwitch
+	resumeSwitch,
+	rebaseOntoTrunk
 } = require('../../src/ticket-branches.js');
 const { describeSwitchProgress } = require('../../src/switch-progress.cjs');
 const { git: bundledGit, tempDir } = require('./helpers/git.cjs');
@@ -555,4 +556,130 @@ test('resumeSwitch finishes a failed switch without parking the half-swapped tre
 	const same = await resumeSwitch(dir, TRUNK);
 	assert.equal(same.switched, false);
 	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n');
+});
+
+// --- rebaseOntoTrunk (#385) -------------------------------------------------
+
+// Trunk moves on while the ticket is parked or checked out: the fixture
+// commits on trunk with isomorphic-git, the way the other suites move a
+// fixture's history, without touching the ticket branch.
+async function moveTrunk(dir, files, { returnTo = null } = {}) {
+	await git.checkout({ fs, dir, ref: TRUNK, force: true });
+	for (const [file, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, file), content);
+	await git.add({ fs, dir, filepath: Object.keys(files) });
+	const oid = await git.commit({ fs, dir, message: 'trunk moves on', author: AUTHOR });
+	if (returnTo) await git.checkout({ fs, dir, ref: returnTo, force: true });
+	return oid;
+}
+
+const wipOf = async (dir, ref) => {
+	const oid = await git.resolveRef({ fs, dir, ref });
+	const { commit } = await git.readCommit({ fs, dir, oid });
+	return { oid, parents: commit.parent, message: commit.message.trim() };
+};
+
+test('rebaseOntoTrunk replays the single WIP commit onto the new trunk and keeps every invariant (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // trunk\n// my work\n');
+	await switchToBranch(dir, TRUNK, { baseOid });
+	const newTrunk = await moveTrunk(dir, { 'doomed.php': '<?php // trunk changed this\n' });
+	await switchToBranch(dir, ref, { baseOid });
+	const stages = [];
+
+	const result = await rebaseOntoTrunk(dir, ref, { baseOid, onProgress: (p) => stages.push(p.stage) });
+
+	assert.deepEqual({ rebased: result.rebased, from: result.from, to: result.to, parked: result.parked }, { rebased: true, from: baseOid, to: newTrunk, parked: false });
+	const wip = await wipOf(dir, ref);
+	assert.equal(wip.oid, result.oid);
+	assert.deepEqual(wip.parents, [newTrunk], 'one commit, parented on the new trunk');
+	assert.equal(wip.message, WIP_MESSAGE);
+	assert.equal(await currentBranchName(dir), ref);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // trunk\n// my work\n', 'the work is still there');
+	assert.equal(read(dir, 'doomed.php'), '<?php // trunk changed this\n', 'and trunk\'s change arrived');
+	assert.equal(read(dir, 'node_modules/react/index.js'), 'expensive\n');
+	assert.equal(await hasChangesAgainst(dir), false, 'the tree is the rebased WIP, nothing loose');
+	assert.equal(await hasChangesAgainst(dir, TRUNK), true, 'and it still differs from trunk by the work');
+	assert.ok(stages.includes('rebase') && stages[stages.length - 1] === 'done', stages.join(','));
+	assert.equal(await git.resolveRef({ fs, dir, ref: TRUNK }), newTrunk, 'trunk itself was not touched');
+});
+
+test('rebaseOntoTrunk parks loose edits into the WIP first, and a ticket with no work just moves its start (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	const newTrunk = await moveTrunk(dir, { 'doomed.php': '<?php // v2\n' }, { returnTo: ref });
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // loose edit\n');
+
+	const result = await rebaseOntoTrunk(dir, ref, { baseOid });
+
+	assert.equal(result.parked, true);
+	const wip = await wipOf(dir, ref);
+	assert.deepEqual(wip.parents, [newTrunk]);
+	assert.equal(read(dir, 'wp-login.php'), '<?php // loose edit\n');
+	assert.equal(read(dir, 'doomed.php'), '<?php // v2\n');
+
+	// A second ticket that never had work: its ref simply starts from trunk.
+	// Started from a clean trunk, or the first ticket's tree would ride into
+	// it as loose edits (#234) and be parked as work.
+	await switchToBranch(dir, TRUNK, { baseOid: newTrunk });
+	const second = await startTicketBranch(dir, 61002);
+	await switchToBranch(dir, TRUNK, { baseOid: second.baseOid });
+	const newer = await moveTrunk(dir, { 'doomed.php': '<?php // v3\n' });
+	const moved = await rebaseOntoTrunk(dir, second.ref, { baseOid: second.baseOid });
+	assert.equal(moved.rebased, true);
+	assert.equal(await git.resolveRef({ fs, dir, ref: second.ref }), newer);
+	assert.equal(await currentBranchName(dir), TRUNK, 'a branch that is not checked out is not checked out afterwards either');
+});
+
+test('rebaseOntoTrunk is a no-op when trunk has not moved (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	const result = await rebaseOntoTrunk(dir, ref, { baseOid });
+	assert.deepEqual(result, { rebased: false, from: baseOid, to: baseOid, parked: false, oid: null });
+	assert.equal(read(dir, 'wp-login.php'), '<?php // work\n', 'nothing was parked or checked out');
+	await assert.rejects(rebaseOntoTrunk(dir, ref, {}), (e) => e.code === 'no-base');
+});
+
+test('rebaseOntoTrunk refuses a conflict with the paths and moves nothing (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // my version\n');
+	await switchToBranch(dir, TRUNK, { baseOid });
+	const before = await wipOf(dir, ref);
+	await moveTrunk(dir, { 'wp-login.php': '<?php // trunk version\n' }, { returnTo: ref });
+	const indexBefore = fs.statSync(path.join(dir, '.git', 'index')).mtimeMs;
+
+	await assert.rejects(rebaseOntoTrunk(dir, ref, { baseOid }), (e) => {
+		assert.equal(e.code, 'rebase-conflict');
+		assert.deepEqual(e.conflicts, ['wp-login.php']);
+		return true;
+	});
+
+	assert.deepEqual(await wipOf(dir, ref), before, 'the WIP commit is untouched');
+	assert.equal(read(dir, 'wp-login.php'), '<?php // my version\n');
+	assert.equal(fs.statSync(path.join(dir, '.git', 'index')).mtimeMs, indexBefore, 'no checkout ran');
+	assert.equal(await currentBranchName(dir), ref);
+});
+
+// The ref moves before the checkout, so a checkout that cannot start leaves
+// the branch rebased over the old tree: tagged like a switch, so the caller's
+// marker and `resumeSwitch(ref)` finish it.
+test('rebaseOntoTrunk tags a checkout that fails with the stage, the ref already moved (issue #385)', async (t) => {
+	const { dir, baseOid } = await makeSite(t);
+	const { ref } = await startTicketBranch(dir, 59234);
+	fs.writeFileSync(path.join(dir, 'wp-login.php'), '<?php // work\n');
+	await switchToBranch(dir, TRUNK, { baseOid });
+	const newTrunk = await moveTrunk(dir, { 'doomed.php': '<?php // v2\n' });
+	await switchToBranch(dir, ref, { baseOid });
+	fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
+
+	await assert.rejects(rebaseOntoTrunk(dir, ref, { baseOid }), (e) => e.stage === 'checkout' && e.from === ref && e.to === ref && e.movedTo === newTrunk);
+
+	assert.deepEqual((await wipOf(dir, ref)).parents, [newTrunk], 'the branch is on the new trunk');
+	assert.equal(read(dir, 'doomed.php'), '<?php // to be deleted\n', 'the tree is still the old one');
+	fs.unlinkSync(path.join(dir, '.git', 'index.lock'));
+	await resumeSwitch(dir, ref);
+	assert.equal(read(dir, 'doomed.php'), '<?php // v2\n');
+	assert.equal(read(dir, 'wp-login.php'), '<?php // work\n');
 });

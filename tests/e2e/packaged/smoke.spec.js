@@ -72,6 +72,7 @@ const EXPECTED_API_KEYS = [
 	'platform',
 	'playgroundWebAvailable',
 	'previewPatch',
+	'rebaseBranch',
 	'revealWpDebug',
 	'runNpmInstall',
 	'runNpmScript',

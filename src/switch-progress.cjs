@@ -149,6 +149,8 @@ function describeSwitchProgress({ stage, loaded, total, from, to } = {}) {
 			return `Saving ${saving()}… ${withCount(loaded, total)}`;
 		case 'commit':
 			return `Saving ${saving()}…`;
+		case 'rebase':
+			return `Moving ${saving()} onto the current trunk…`;
 		case 'analyze':
 			return 'Checking which files change…';
 		case 'apply':

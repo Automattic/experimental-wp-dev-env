@@ -51,6 +51,7 @@ const {
 	startTicketBranch,
 	switchToBranch,
 	resumeSwitch,
+	rebaseOntoTrunk,
 	deleteTicketBranch
 } = require('./ticket-branches');
 const { createProgressThrottle, describeSwitchProgress } = require('./switch-progress.cjs');
@@ -1080,12 +1081,19 @@ async function midSwitchBlock(sitePath, { retryTo = null } = {}) {
     // which `resumeSwitch` finishes without parking. Any other destination
     // would park first, and parking is what the marker forbids.
     if (retryTo && switchInProgress.to === retryTo) return null;
+    const { from, to } = switchInProgress;
     return {
         ok: false,
         code: 'switch-incomplete',
         switchInProgress,
-        error: `A previous switch from ${switchInProgress.from} to ${switchInProgress.to} did not finish. `
-            + `Retry it before making other changes — your work on ${switchInProgress.from} is still committed on that branch.`
+        // Same branch on both ends: a move onto the current trunk whose file
+        // swap did not finish. The card offers no retry for the ticket in
+        // hand, so the sentence names the exit that exists.
+        error: from === to
+            ? `Moving your work on ${to} onto the current trunk did not finish its file swap. `
+                + 'Unlink the ticket and continue it to finish; your work is committed on its branch.'
+            : `A previous switch from ${from} to ${to} did not finish. `
+                + `Retry it before making other changes — your work on ${from} is still committed on that branch.`
     };
 }
 
@@ -1505,8 +1513,8 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
             //
             // The branch keeps its original branch point, so its patch stays
             // correct against the trunk it was written on. Bringing it forward
-            // onto the new trunk is the replay flow, which is its own issue —
-            // the app never silently rebases anyone.
+            // onto the new trunk is `branches:rebase`, offered by the ticket
+            // card's notice — the app never silently rebases anyone.
             if (ticketBefore !== null) {
                 sendLog(`\nReturning to your work on ${branchBefore}…\n`);
                 const returnLog = updateSwitchLogger(sendLog);
@@ -2132,7 +2140,7 @@ async function withRegisteredSite(sitePath, run) {
 		// file a contributor attaches to a bug report — and two of the three
 		// channels have no UI to show that string yet.
 		logError('branches', `${describeRefused(sitePath)}: ${String(e && e.stack ? e.stack : e)}`);
-		return { ok: false, error: String(e && e.message ? e.message : e), code: e && e.code };
+		return { ok: false, error: String(e && e.message ? e.message : e), code: e && e.code, ...(e && Array.isArray(e.conflicts) ? { conflicts: e.conflicts } : {}) };
 	}
 }
 
@@ -2304,6 +2312,50 @@ ipcMain.handle('branches:switch', async (event, sitePath, targetRef) => withRegi
 	}
 	await mergeSiteMeta(sitePath, { currentBranch: targetRef, tracTicket: ticketId });
 	return { ok: true, from: current, to: targetRef, parked: result.parked, ticket: ticketId };
+}));
+
+// "Update this ticket to the current trunk" (#385): the ticket's single WIP
+// commit replayed onto trunk's tip, its recorded base moved with it. Only the
+// active ticket: the notice that offers it is about the ticket in hand. Refuses
+// on trunk and without a recorded base (#305: the app does not guess a base),
+// and a conflict comes back with the paths and nothing moved. Unlike a discard,
+// the applied-patch record survives (the patch is still in the work); only its
+// revert text is dropped.
+ipcMain.handle('branches:rebase', async (event, sitePath) => withRegisteredSite(sitePath, async () => {
+	const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath);
+	if (blocked) return blocked;
+	const { ref, meta } = await activeBranch(sitePath, { migrate: true });
+	if (ref === TRUNK) {
+		return { ok: false, code: 'on-trunk', error: 'Link a ticket first: trunk is what tickets are measured against, not a ticket.' };
+	}
+	if (!meta || !meta.baseOid) {
+		return { ok: false, code: 'no-base', error: 'This ticket has no recorded starting point, so the app cannot move its work onto the current trunk.' };
+	}
+	const progress = switchProgressReporter(event, sitePath);
+	let result;
+	try {
+		result = await withSwitchMarker(sitePath, () => rebaseOntoTrunk(sitePath, ref, { baseOid: meta.baseOid, onProgress: progress.emit, onChild: trackGitChild(sitePath) }));
+	} catch (e) {
+		// The ref moved and only the checkout failed: the base has to follow
+		// the ref now, not after the retry. Every patch reads `baseOid`, none
+		// of those readers is behind the mid-switch marker, and a patch
+		// measured from the old base would carry trunk's changes.
+		if (e && e.movedTo) await mergeBranchMeta(sitePath, ref, { baseOid: e.movedTo });
+		throw e;
+	} finally {
+		progress.flush();
+	}
+	await mergeBranchMeta(sitePath, ref, { baseOid: result.to, lastUsedAt: new Date().toISOString() });
+	if (result.rebased) {
+		// The patch someone applied is still in the work (the merge keeps the
+		// ticket's tree), so the record stays and the #328 ownership guard
+		// with it. Its text goes: reverse-applying hunks written against the
+		// old trunk cannot be trusted on the new one, and a record without a
+		// text is exactly "applied, not revertable" to site:status.
+		const { appliedPatch } = await readWorkMeta(sitePath);
+		if (appliedPatch && appliedPatch.text) await writeWorkMeta(sitePath, { appliedPatch: { ...appliedPatch, text: null } });
+	}
+	return { ok: true, ticket: ticketIdFromRef(ref), from: result.from, to: result.to, rebased: result.rebased, parked: result.parked };
 }));
 
 // "Delete this ticket's work" — a branch deletion, not a site reset (#108). The

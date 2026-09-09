@@ -154,3 +154,35 @@ test('isAncestor: the branch point is an ancestor of the tip, not the other way 
 	assert.equal(await read.isAncestor(dir, tip, tip), true, 'a commit is its own ancestor');
 	await assert.rejects(read.isAncestor(dir, '0000000000000000000000000000000000000001', tip), (error) => error.code === 128);
 });
+
+test('mergeTree merges two sides from a base without touching the index or the worktree, and names what conflicts (#385)', async (t) => {
+	const dir = makeRepo(t);
+	const commit = (msg) => { assert.equal(git(['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-am', msg], dir).status, 0); return git(['rev-parse', 'HEAD'], dir).stdout; };
+	const base = git(['rev-parse', 'HEAD'], dir).stdout;
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // login\n// theirs\n');
+	const theirs = commit('theirs');
+	assert.equal(git(['reset', '-q', '--hard', base], dir).status, 0);
+	fs.writeFileSync(path.join(dir, 'with space.txt'), 'ours\n');
+	const ours = commit('ours');
+	const indexBefore = fs.statSync(path.join(dir, '.git', 'index')).mtimeMs;
+
+	const clean = await read.mergeTree(dir, { base, ours, theirs });
+	assert.equal(clean.conflicted, false);
+	assert.deepEqual(clean.conflicts, []);
+	assert.equal(git(['show', `${clean.tree}:src/wp-login.php`], dir).stdout, '<?php // login\n// theirs');
+	assert.equal(git(['show', `${clean.tree}:with space.txt`], dir).stdout, 'ours');
+	assert.equal(fs.statSync(path.join(dir, '.git', 'index')).mtimeMs, indexBefore, 'the index was not written');
+	assert.equal(git(['status', '--porcelain=v2'], dir).stdout, '', 'nor the worktree');
+
+	// base == ours: nothing to merge, theirs' tree comes back as it is.
+	const same = await read.mergeTree(dir, { base, ours: base, theirs });
+	assert.equal(same.tree, git(['rev-parse', `${theirs}^{tree}`], dir).stdout);
+
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // login\n// ours too\n');
+	const clash = commit('clash');
+	const conflicted = await read.mergeTree(dir, { base, ours: clash, theirs });
+	assert.equal(conflicted.conflicted, true);
+	assert.deepEqual(conflicted.conflicts, ['src/wp-login.php']);
+	assert.match(conflicted.tree, /^[0-9a-f]{40}$/, 'a tree is still written, with markers, for whoever wants it');
+	await assert.rejects(read.mergeTree(dir, { base, ours: '0000000000000000000000000000000000000001', theirs }), (e) => e.code === 128);
+});

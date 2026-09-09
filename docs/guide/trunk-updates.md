@@ -38,7 +38,7 @@ The dialog in step 1 only ever concerns edits that are loose in the working tree
 
 What an update does not move is the snapshot your ticket branch was created on. That is deliberate — it is what keeps your patch free of the upstream changes the update just brought in — but it means an old ticket's patch does not get any newer by updating the site. The same is true for every other ticket stored on the site: updating trunk does not rebase any of them.
 
-After the update, the **Trac ticket** card may say **Trunk has moved since this ticket started**. That is not an incomplete update: trunk is current and the ticket is still safely on its original base. To move the work forward, save its patch, unlink it, delete its branch, link the ticket again, and apply the saved patch. The app never changes a ticket's base without that explicit sequence. See [When trunk has moved since the ticket started](./ticket-branches#when-trunk-has-moved-since-the-ticket-started).
+After the update, the **Trac ticket** card may say **Trunk has moved since this ticket started**. That is not an incomplete update: trunk is current and the ticket is still safely on its original base. To move the work forward, click **Update this ticket to the current trunk** in that notice, or save its patch, unlink it, delete its branch, link the ticket again, and apply the saved patch. The app never changes a ticket's base without one of those explicit actions. See [When trunk has moved since the ticket started](./ticket-branches#when-trunk-has-moved-since-the-ticket-started).
 
 ## Staleness dots and notices
 

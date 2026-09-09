@@ -187,3 +187,10 @@ test('describeSwitchProgress: every stage says something, including one we do no
 		assert.doesNotMatch(line, /undefined|NaN/, stage);
 	}
 });
+
+test('describeSwitchProgress: the move onto trunk names the ticket whose work moves (#385)', () => {
+	const line = describeSwitchProgress({ stage: 'rebase', from: 'ticket/59234', to: 'ticket/59234' });
+	assert.match(line, /#59234/);
+	assert.match(line, /trunk/);
+	assert.doesNotMatch(line, /ticket\//);
+});

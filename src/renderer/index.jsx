@@ -42,7 +42,7 @@ import { prDateLabel } from './pr-date-label.cjs';
 import { ticketUrl, attachUrl } from './trac-ticket.cjs';
 import { adminUrl, adminerUrl } from './site-urls.cjs';
 import { ticketBranchRows, ticketListCard } from './ticket-branch-list.cjs';
-import { ticketTrunkNotice } from './ticket-trunk-notice.cjs';
+import { ticketTrunkNotice, rebaseRefusal } from './ticket-trunk-notice.cjs';
 import { legacySiteNotice } from './legacy-site.cjs';
 import { describeSwitchProgress } from '../switch-progress.cjs';
 import { highlightDiff, hasDiffLines } from './diff-highlight.cjs';
@@ -1823,6 +1823,30 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   const linkTicket = useCallback(() => saveTicket(ticketInput), [saveTicket, ticketInput]);
   const unlinkTicket = useCallback(() => saveTicket(''), [saveTicket]);
 
+  // The notice's own button (#385): the ticket's work replayed onto the
+  // current trunk in main. Same busy flag and progress line as a switch,
+  // because it parks and checks out the same way; a refusal is worded by the
+  // notice module and lands where the ticket's other refusals do.
+  const rebaseTicket = useCallback(async () => {
+    setTicketSaving(true);
+    setTicketError('');
+    if (onClearSwitchNotices) onClearSwitchNotices(sitePath);
+    try {
+      const res = await window.api.rebaseBranch(sitePath);
+      if (!res?.ok) {
+        setTicketError(rebaseRefusal({ ...res, ticketId: tracTicket }));
+        return;
+      }
+      setTicketBehindTrunk(false);
+      await Promise.all([loadBranches(), loadStatus()]);
+      reprobeAfterBranchChange();
+    } catch (e) {
+      setTicketError(String(e));
+    } finally {
+      setTicketSaving(false);
+    }
+  }, [sitePath, tracTicket, loadBranches, loadStatus, onClearSwitchNotices, reprobeAfterBranchChange]);
+
   const discardTrunkWorkAndSwitch = useCallback(async (ref) => {
     setTicketSaving(true);
     setTicketError('');
@@ -2670,6 +2694,24 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       </div>
     </div>
   ) : null;
+
+  // What the panel says back after an action: the refusal, the switch's
+  // progress line, the carried-work and saved-clean notices, and the
+  // dirty-trunk question. Rendered under the controls that cause them, the
+  // Unlink row and the trunk notice's button when a ticket is linked, the
+  // Link ticket field when none is, rather than at the foot of a card that
+  // can be a screen tall by the time the pull requests have loaded.
+  const ticketFeedback = (
+    <>
+      {ticketError ? (
+        <div role="alert" style={{ marginTop: 8, color: '#d63638', fontSize: 12 }}>{ticketError}</div>
+      ) : null}
+      {switchProgressLine}
+      {carriedNotice}
+      {savedCleanNotice}
+      {blockedPanel}
+    </>
+  );
   const renderBranchRows = (linked) => (
     <div style={{ marginTop: 8, border: '1px solid #ddd', borderRadius: 6, overflow: 'hidden' }}>
       {branchRows.map((row, i) => (
@@ -4564,8 +4606,20 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
               <div role="status" style={{ marginTop: 10, padding: '10px 12px', background: '#fcf9e8', border: '1px solid #dba617', borderRadius: 6, color: '#6e5406', fontSize: 12 }}>
                 <div style={{ fontWeight: 600 }}>{staleTicketNotice.title}</div>
                 <div style={{ marginTop: 4 }}>{staleTicketNotice.body}</div>
+                <div style={{ marginTop: 8 }}>
+                  {/* Rewrites the tree when the ticket is checked out, so the
+                      same gate as a discard: nothing running over the files. */}
+                  <Button
+                    variant="secondary"
+                    isBusy={ticketSaving}
+                    disabled={ticketActionsBlocked || layerExitBlocked}
+                    title={layerExitBlocked ? discardDisabledReason({ patchHasChanges: true, isUpdating, installing, building, devServerActive: isDevProcessActive, discarding }) : undefined}
+                    onClick={rebaseTicket}
+                  >{staleTicketNotice.action}</Button>
+                </div>
               </div>
             ) : null}
+            {ticketFeedback}
 
             {tracInfo ? (
               <div style={{ marginTop: 10 }}>
@@ -4791,13 +4845,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
             </div>
           </>
         )}
-        {ticketError ? (
-          <div role="alert" style={{ marginTop: 8, color: '#d63638', fontSize: 12 }}>{ticketError}</div>
-        ) : null}
-        {switchProgressLine}
-        {carriedNotice}
-        {savedCleanNotice}
-        {blockedPanel}
+        {tracTicket ? null : ticketFeedback}
         {tracTicket ? null : (
           <div style={{ marginTop: 8 }}>
             <Button variant="link" onClick={() => window.api.openExternal(TRAC_TICKET_LISTS_URL)} style={{ fontSize: 12 }}>

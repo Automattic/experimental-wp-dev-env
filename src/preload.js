@@ -77,6 +77,10 @@ contextBridge.exposeInMainWorld('api', {
 ,
 	switchBranch: (sitePath, ref) => ipcRenderer.invoke('branches:switch', sitePath, ref)
 ,
+	// The active ticket's work moved onto the current trunk (#385); progress
+	// rides the switch channel.
+	rebaseBranch: (sitePath) => ipcRenderer.invoke('branches:rebase', sitePath)
+,
 	deleteBranch: (sitePath, ref) => ipcRenderer.invoke('branches:delete', sitePath, ref)
 ,
 	// A long-lived subscription rather than the per-run pair the installs use

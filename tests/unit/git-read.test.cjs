@@ -158,6 +158,29 @@ test('isLegacySite reads no config when the repository is not shallow (#385)', a
 	assert.deepEqual(seen, []);
 });
 
+test('merge-tree -z --name-only: the tree, then the conflicted paths once each, the messages dropped (#385)', () => {
+	assert.deepEqual(read.parseMergeTreeZ(Buffer.from('abc123\0')), { tree: 'abc123', conflicts: [] });
+	assert.deepEqual(read.parseMergeTreeZ(Buffer.from('abc123\n')), { tree: 'abc123', conflicts: [] });
+	const conflicted = z('abc123', 'src/wp-login.php', 'src/wp-login.php', 'with space.txt', '', '1', 'src/wp-login.php', 'Auto-merging', 'Auto-merging src/wp-login.php\n', '2', 'src/wp-login.php', 'with space.txt', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict\n');
+	assert.deepEqual(read.parseMergeTreeZ(conflicted), { tree: 'abc123', conflicts: ['src/wp-login.php', 'with space.txt'] });
+	assert.deepEqual(read.parseMergeTreeZ(Buffer.alloc(0)), { tree: '', conflicts: [] });
+});
+
+test('mergeTree is one merge-tree call whose exit code says whether the tree is usable (#385)', async () => {
+	const calls = [];
+	const run = async (args, options) => {
+		calls.push({ args, options });
+		return args.includes('bad') ? { status: 1, stdout: z('t2', 'a.php', ''), stderr: '' } : { status: 0, stdout: Buffer.from('t1\0'), stderr: '' };
+	};
+	assert.deepEqual(await read.mergeTree('/sites/wp', { base: 'b', ours: 'o', theirs: 'good' }, { run }), { tree: 't1', conflicted: false, conflicts: [] });
+	assert.deepEqual(await read.mergeTree('/sites/wp', { base: 'b', ours: 'o', theirs: 'bad' }, { run }), { tree: 't2', conflicted: true, conflicts: ['a.php'] });
+	assert.deepEqual(calls[0].args, ['merge-tree', '--write-tree', '-z', '--name-only', '--merge-base=b', 'o', 'good']);
+	assert.deepEqual(calls[0].options, { cwd: '/sites/wp', okCodes: [0, 1], extraEnv: { GIT_NO_LAZY_FETCH: '1' } });
+	// Exit 1 with a path list the parser cannot read is still a conflict.
+	const mute = async () => ({ status: 1, stdout: Buffer.from('t3\0'), stderr: '' });
+	assert.deepEqual(await read.mergeTree('/sites/wp', { base: 'b', ours: 'o', theirs: 'x' }, { run: mute }), { tree: 't3', conflicted: true, conflicts: [] });
+});
+
 test('remoteUrl is one config read, null when the remote is not there (#385)', async () => {
 	const run = async (args, options) => {
 		assert.deepEqual(options, { cwd: '/sites/wp', okCodes: [0, 1] });

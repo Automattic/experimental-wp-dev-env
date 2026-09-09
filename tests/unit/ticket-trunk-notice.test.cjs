@@ -4,13 +4,24 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { ticketTrunkNotice } = require('../../src/renderer/ticket-trunk-notice.cjs');
+const { ticketTrunkNotice, rebaseRefusal } = require('../../src/renderer/ticket-trunk-notice.cjs');
 
-test('ticketTrunkNotice says what changed and gives the deliberately manual exit (#305)', () => {
+test('ticketTrunkNotice says what changed and offers the move (#305, #385)', () => {
 	assert.deepStrictEqual(ticketTrunkNotice({ ticketId: 123, behind: true }), {
 		title: 'Trunk has moved since this ticket started.',
-		body: 'Newer patches may not apply cleanly. Save a copy of your work, unlink the ticket, delete its work from the site, then link #123 again to start from the current trunk.'
+		body: 'Newer patches may not apply cleanly. Move your work onto the current trunk here, or save a copy of it and start the ticket again.',
+		action: 'Update this ticket to the current trunk'
 	});
+});
+
+test('rebaseRefusal names the files that clash and hands over the manual path (#385)', () => {
+	const sentence = rebaseRefusal({ code: 'rebase-conflict', conflicts: ['src/wp-login.php', 'src/wp-admin/about.php'], ticketId: 123 });
+	assert.match(sentence, /src\/wp-login\.php, src\/wp-admin\/about\.php/);
+	assert.match(sentence, /Nothing was moved/);
+	assert.match(sentence, /link #123 again/);
+	assert.match(rebaseRefusal({ code: 'no-base', ticketId: 123 }), /which trunk #123 started from/);
+	assert.equal(rebaseRefusal({ code: 'legacy-site', error: 'the sentence' }), 'the sentence');
+	assert.equal(rebaseRefusal({}), 'Could not move the ticket onto the current trunk.');
 });
 
 test('ticketTrunkNotice stays silent without a ticket or a known move (#305)', () => {
@@ -22,11 +33,21 @@ test('ticketTrunkNotice stays silent without a ticket or a known move (#305)', (
 });
 
 test('the ticket card renders the stale-ticket notice returned by status (#305)', () => {
-	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx'), 'utf8');
+	// LF whatever the checkout's line endings: a Windows runner reads the
+	// source as CRLF and the position check below compares bytes.
+	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx'), 'utf8').replace(/\r\n/g, '\n');
 	assert.match(source, /setTicketBehindTrunk\(Boolean\(s\?\.ticketBehindTrunk\)\)/);
 	assert.match(source, /ticketTrunkNotice\(\{ ticketId: tracTicket, behind: ticketBehindTrunk \}\)/);
 	assert.match(source, /staleTicketNotice\.title/);
 	assert.match(source, /staleTicketNotice\.body/);
+	assert.match(source, /staleTicketNotice\.action/);
+	assert.match(source, /window\.api\.rebaseBranch\(sitePath\)/);
+	assert.match(source, /setTicketError\(rebaseRefusal\(/);
+	// The panel's feedback (the refusal among it) sits under the notice and
+	// the Unlink row, not at the foot of the card (#385 walkthrough).
+	const feedbackUnderNotice = source.indexOf('{ticketFeedback}\n\n            {tracInfo ? (');
+	assert.ok(feedbackUnderNotice > 0, 'ticketFeedback renders right after the stale notice');
+	assert.ok(source.indexOf('staleTicketNotice.action') < feedbackUnderNotice);
 	assert.match(
 		source,
 		/setTicketBehindTrunk\(false\);\s+setTracTicket\(res\.ticket\);/,

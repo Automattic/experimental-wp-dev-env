@@ -234,6 +234,28 @@ function parseLsTreeZ(buf) {
 }
 
 /**
+ * `git merge-tree --write-tree -z --name-only` output → the merged tree and
+ * the paths that conflicted. The first field is the tree oid (written even
+ * when there are conflicts, with conflict markers inside); then, only on a
+ * conflict, one path per field until an empty field closes that section;
+ * the informational messages after it are for a human and dropped. A path
+ * appears once per conflicting stage, so it is listed once here.
+ *
+ * @param {Buffer} buf
+ * @return {{tree: string, conflicts: string[]}}
+ */
+function parseMergeTreeZ(buf) {
+	const fields = splitNul(buf).map((field) => field.toString('utf8'));
+	const tree = (fields[0] || '').trim();
+	const conflicts = [];
+	for (let i = 1; i < fields.length; i++) {
+		if (fields[i].length === 0) break;
+		if (!conflicts.includes(fields[i])) conflicts.push(fields[i]);
+	}
+	return { tree, conflicts };
+}
+
+/**
  * The Windows-only view createCrlfCompatibleFs gives isomorphic-git, for the
  * binary: a site checked out by a host Git with a global `autocrlf = true`
  * sits on disk as CRLF, its repository config says nothing, and the app's Git
@@ -347,6 +369,37 @@ async function remoteUrl(dir, remote, { run = runGit } = {}) {
 async function isAncestor(dir, ancestor, descendant, { run = runGit } = {}) {
 	const { status } = await run(['merge-base', '--is-ancestor', ancestor, descendant], { cwd: dir, okCodes: [0, 1] });
 	return status === 0;
+}
+
+/**
+ * A three-way merge of `theirs` onto `ours` from `base`, as a tree object
+ * (#385): what replaying a ticket's single WIP commit onto a moved trunk
+ * needs. `merge-tree --write-tree` writes objects and nothing else, no ref,
+ * no index, no file, so it sits with the reads; the tree it returns is
+ * unreachable until a caller commits it. Exit 1 means the merge has
+ * conflicts, and `conflicts` names the paths; the tree then carries markers
+ * and is not something the app writes anywhere. An oid Git does not have is
+ * a fatal and rejects.
+ *
+ * @param {string}   dir
+ * @param {Object}   root0
+ * @param {string}   root0.base
+ * @param {string}   root0.ours
+ * @param {string}   root0.theirs
+ * @param {Object}   [options]
+ * @param {Function} [options.run]
+ * @return {Promise<{tree: string, conflicted: boolean, conflicts: string[]}>}
+ */
+async function mergeTree(dir, { base, ours, theirs }, { run = runGit } = {}) {
+	// No lazy fetch: on a partial clone a blob none of the three sides has
+	// checked out would be pulled from the promisor mid-merge, with no
+	// timeout to bound it. Refusing with Git's reason beats waiting on a
+	// network the contributor may not have.
+	const { status, stdout } = await run(['merge-tree', '--write-tree', '-z', '--name-only', `--merge-base=${base}`, ours, theirs], { cwd: dir, okCodes: [0, 1], extraEnv: { GIT_NO_LAZY_FETCH: '1' } });
+	const parsed = parseMergeTreeZ(stdout);
+	// The exit code is the answer; the paths are the detail. A conflict Git
+	// reports in a shape the parser does not read is still a conflict.
+	return { tree: parsed.tree, conflicted: status === 1, conflicts: status === 1 ? parsed.conflicts : [] };
 }
 
 /**
@@ -497,11 +550,13 @@ module.exports = {
 	parseCatFileBatch,
 	parseCatFileBatchCheck,
 	parseLsTreeZ,
+	parseMergeTreeZ,
 	crlfArgs,
 	windowsArgs,
 	isLegacySite,
 	resolveRef,
 	isAncestor,
+	mergeTree,
 	remoteUrl,
 	readCommitInfo,
 	currentBranch,
