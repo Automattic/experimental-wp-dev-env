@@ -819,6 +819,9 @@ function App() {
             const siteName = (meta.label && meta.label.trim()) || pathBasename(sitePath);
             const isActive = activeSite === sitePath;
             const isDeleting = deletingSites.includes(sitePath);
+            let siteButtonMinHeight = 40;
+            if (sidebarCollapsed) siteButtonMinHeight = 36;
+            else if (isDeleting) siteButtonMinHeight = 58;
             // Staleness surfaces in the sidebar before the site is even
             // opened (#94): amber = old trunk snapshot, red = an update that
             // moved trunk but never finished install/build.
@@ -841,6 +844,8 @@ function App() {
                 onClick={() => handleSelectSite(sitePath)}
                 aria-busy={isDeleting}
                 aria-label={isDeleting ? `${siteName}, Deleting` : undefined}
+                disabled={isDeleting}
+                accessibleWhenDisabled={isDeleting}
                 variant="tertiary"
                 isSmall
                 isPressed={isActive}
@@ -852,16 +857,24 @@ function App() {
                   color: '#f7f7f7',
                   padding: sidebarCollapsed ? '8px 0' : '10px 12px',
                   borderRadius: 6,
+                  height: 'auto',
+                  minHeight: siteButtonMinHeight,
+                  opacity: 1,
                 }}
               >
-                {sidebarCollapsed ? (
+                {sidebarCollapsed && !isDeleting ? (
                   <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>{siteName.slice(0, 1).toUpperCase()}{staleDot}</span>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
-                    <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>{siteName}{staleDot}</span>
-                    {isDeleting ? <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.72)' }}>Deleting…</span> : null}
+                ) : null}
+                {sidebarCollapsed && isDeleting ? <Spinner style={{ width: 16, height: 16, margin: 0 }} /> : null}
+                {!sidebarCollapsed ? (
+                  <div style={{ width: '100%', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+                      <span style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>{siteName}{staleDot}</span>
+                      {isDeleting ? <span style={{ fontSize: 11, lineHeight: 1.3, color: 'rgba(255,255,255,0.72)' }}>Deleting site…</span> : null}
+                    </div>
+                    {isDeleting ? <Spinner style={{ width: 16, height: 16, margin: 0, flexShrink: 0 }} /> : null}
                   </div>
-                )}
+                ) : null}
               </Button>
             );
           })}

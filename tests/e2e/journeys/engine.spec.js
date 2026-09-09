@@ -155,7 +155,12 @@ test( 'a failed site deletion stays visible, reports the failure, and can be ret
 
 	// The row speaks while the call is outstanding, and the only delete action is
 	// disabled so a second request cannot race the first one.
-	await expect( page.getByText( 'Deleting…', { exact: true } ) ).toBeVisible();
+	const deletingEntry = page.getByRole( 'button', { name: 'delete-retry, Deleting', exact: true } );
+	await expect( deletingEntry ).toBeDisabled();
+	await expect( deletingEntry.getByText( 'Deleting site…', { exact: true } ) ).toBeVisible();
+	await page.getByRole( 'button', { name: 'Collapse site list', exact: true } ).click();
+	await expect( deletingEntry.locator( '.components-spinner' ) ).toBeVisible();
+	await page.getByRole( 'button', { name: 'Expand site list', exact: true } ).click();
 	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
 	await expect( page.getByRole( 'menuitem', { name: 'Deleting…', exact: true } ) ).toBeDisabled();
 	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
@@ -169,7 +174,7 @@ test( 'a failed site deletion stays visible, reports the failure, and can be ret
 	const failure = `The site is still listed because its folder could not be deleted (EBUSY). Close anything using it, then try again. Folder: ${ site.dir }`;
 	await expect( page.getByText( failure, { exact: true } ) ).toBeVisible();
 	await expect( sidebarEntry( page, 'delete-retry' ) ).toBeVisible();
-	await expect( page.getByText( 'Deleting…', { exact: true } ) ).toHaveCount( 0 );
+	await expect( page.getByText( 'Deleting site…', { exact: true } ) ).toHaveCount( 0 );
 
 	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
 	await expect( page.getByRole( 'menuitem', { name: 'Delete this site', exact: true } ) ).toBeEnabled();
