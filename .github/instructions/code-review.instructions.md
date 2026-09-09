@@ -79,6 +79,8 @@ This is the direction chosen in #216 over building a DOM harness, which was judg
 
 **Changing the shape of what `electron-store` holds needs a migration path.** Existing users have site registries on disk; a renamed or restructured key silently orphans their sites.
 
+**Complexity stays proportional to current requirements.** The one-place rules above (one Git spawner, one parser, one store, one progress reader) are instances of this: reuse the repository's established mechanisms rather than introduce competing implementations of the same responsibility, and avoid speculative options, configuration surfaces and abstraction layers without a demonstrated current need. A complexity finding must identify the unnecessary mechanism and describe a simpler alternative that preserves required behaviour, error handling, security, cross-platform support and testability; "too complicated" on its own is not a finding. A single caller or implementation is not a finding by itself either: extraction for clarity, separation of responsibilities or testing can justify it. Apply this to complexity the PR introduces; broader simplifications belong in `[follow-up]`.
+
 ## 2. Security
 
 The threat model is not a hostile user — it is a contributor's laptop on a conference or café network, running a WordPress with `admin`/`admin`.
