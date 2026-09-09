@@ -21,9 +21,9 @@ Click **Create site** (or press Enter) to start. **Cancel** or Escape closes the
 
 ## What happens during setup
 
-The app clones the `wordpress-develop` repository from GitHub. Git is bundled with the app as `isomorphic-git`, a pure JavaScript implementation, so no system Git installation is involved.
+The app clones the `wordpress-develop` repository from GitHub with the Git it ships inside the app, so no system Git installation is involved. The clone carries the full history but fetches file contents on demand, so it is not much larger than a shallow one.
 
-While the clone runs, the site view shows a **Setting up new site…** card with the current phase and a terminal panel streaming progress output. The clone downloads the full repository, so expect it to take several minutes depending on your connection.
+While the clone runs, the site view shows a **Setting up new site…** card with the current phase and a terminal panel streaming progress output. Expect it to take a few minutes depending on your connection.
 
 The clone is the first step of the [initial setup checklist](./setup-wizard); the remaining steps stay locked until it finishes. Then the app carries on by itself — installing the dependencies and running the first build without waiting for you — so the only step left to click is starting the dev server.
 

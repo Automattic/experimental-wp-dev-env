@@ -54,11 +54,12 @@ function parsePktLines(buffer) {
 	return lines;
 }
 
-// Everything reachable from a commit without following its parents — exactly
-// the object set a depth-1 fetch is entitled to.
-async function objectsAtDepthOne(gitdir, oid) {
-	const oids = new Set([oid]);
-	const { commit } = await git.readCommit({ fs, gitdir, oid });
+// The object set the request is entitled to: the tip's own tree when the
+// client sent `deepen 1`, the whole reachable history when it asked for no
+// depth. Serving the truncated set either way would hide the difference the
+// depth decision makes, which is the thing under test.
+async function reachableObjects(gitdir, oid, { depthOne }) {
+	const oids = new Set();
 	const walkTree = async (treeOid) => {
 		oids.add(treeOid);
 		const { tree } = await git.readTree({ fs, gitdir, oid: treeOid });
@@ -67,8 +68,22 @@ async function objectsAtDepthOne(gitdir, oid) {
 			else oids.add(entry.oid);
 		}
 	};
-	await walkTree(commit.tree);
-	return { oids: [...oids], hasParents: (commit.parent || []).length > 0 };
+
+	let hasParents = false;
+	const queue = [oid];
+	const seen = new Set();
+	while (queue.length) {
+		const commitOid = queue.shift();
+		if (seen.has(commitOid)) continue;
+		seen.add(commitOid);
+		oids.add(commitOid);
+		const { commit } = await git.readCommit({ fs, gitdir, oid: commitOid });
+		await walkTree(commit.tree);
+		const parents = commit.parent || [];
+		if (commitOid === oid) hasParents = parents.length > 0;
+		if (!depthOne) queue.push(...parents);
+	}
+	return { oids: [...oids], hasParents };
 }
 
 async function serveRepo(t, gitdir) {
@@ -109,12 +124,14 @@ async function serveRepo(t, gitdir) {
 				res.end('no want line');
 				return;
 			}
-			const { oids, hasParents } = await objectsAtDepthOne(gitdir, want);
+			const depthOne = lines.some((l) => l.startsWith('deepen '));
+			const { oids, hasParents } = await reachableObjects(gitdir, want, { depthOne });
 			const { packfile } = await git.packObjects({ fs, gitdir, oids, write: false });
 			const out = [];
 			// A truncated history is announced before the ack; a root commit
-			// has nothing to truncate, so real servers stay quiet there too.
-			if (hasParents) out.push(pktLine(`shallow ${want}\n`));
+			// has nothing to truncate, and a client that asked for no depth is
+			// not being truncated, so real servers stay quiet in both cases.
+			if (depthOne && hasParents) out.push(pktLine(`shallow ${want}\n`));
 			out.push(FLUSH, pktLine('NAK\n'));
 			// Band 1 is packfile data.
 			for (let i = 0; i < packfile.length; i += 8192) {
@@ -150,23 +167,29 @@ async function commitInOrigin(origin, files, message) {
 	return git.commit({ fs, dir: origin, message, author: AUTHOR });
 }
 
-// An origin repo with one commit, served over HTTP, and a site shallow-cloned
-// from it — the state a real site is in after setup.
-async function makeSiteAndOrigin(t) {
+// An origin repo with a history behind its tip, served over HTTP, and a site
+// cloned from it — the state a real site is in after setup, shallow for the
+// sites the old engine made and complete for the ones the bundled Git makes.
+//
+// The history matters: a shallow clone of a repository whose tip is the root
+// commit has nothing to truncate, so no `.git/shallow` is written and the
+// fixture would not be the shallow site it claims to be.
+async function makeSiteAndOrigin(t, { shallow = true } = {}) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trunk-update-fetch-test-'));
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 	const origin = path.join(root, 'origin');
 	fs.mkdirSync(origin);
 	await git.init({ fs, dir: origin, defaultBranch: 'trunk' });
+	const baseOid = await commitInOrigin(origin, { 'readme.txt': 'base\n' }, 'base');
 	await commitInOrigin(origin, { 'wp-config.php': 'first\n', 'package-lock.json': '{"lockfileVersion":1}\n' }, 'first');
 
 	const { url, uploadPackRequests } = await serveRepo(t, path.join(origin, '.git'));
 	const dir = path.join(root, 'site');
-	await git.clone({ fs, http: gitHttp, dir, url, ref: 'trunk', singleBranch: true, depth: 1, noTags: true });
+	await git.clone({ fs, http: gitHttp, dir, url, ref: 'trunk', singleBranch: true, ...(shallow ? { depth: 1 } : {}), noTags: true });
 	uploadPackRequests.length = 0; // the clone's request is not under test
 
-	return { origin, dir, url, uploadPackRequests };
+	return { origin, dir, url, uploadPackRequests, baseOid };
 }
 
 // --- tests -----------------------------------------------------------------
@@ -191,6 +214,35 @@ test('updateToLatestTrunk: fetches the new trunk commit and resets the worktree 
 	assert.strictEqual(await git.resolveRef({ fs, dir, ref: 'HEAD' }), newOid);
 	const { commit } = await git.readCommit({ fs, dir, oid: newOid });
 	assert.strictEqual(result.trunkDate, new Date(commit.committer.timestamp * 1000).toISOString());
+});
+
+// The other half of the same decision, and the reason it cannot stay a
+// constant (#385). A site the bundled Git cloned is partial, not shallow: it
+// has the whole commit history, which is what gives every pull request a
+// merge base (#351). Ask for `deepen 1` there and isomorphic-git applies the
+// server's `shallow <newTip>` line before the packfile is written, fails to
+// read the tip it was just told about, and records the boundary anyway — so
+// the first update a contributor runs throws away the history the clone paid
+// for. On the old code this test fails on both assertions below.
+test('updateToLatestTrunk: a site with full history is not made shallow by the update (issue #385)', async (t) => {
+	const { origin, dir, url, uploadPackRequests, baseOid } = await makeSiteAndOrigin(t, { shallow: false });
+	const firstOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+	const secondOid = await commitInOrigin(origin, { 'wp-config.php': 'second\n' }, 'second');
+	const thirdOid = await commitInOrigin(origin, { 'wp-config.php': 'third\n' }, 'third');
+
+	const result = await updateToLatestTrunk({ dir, url });
+
+	assert.deepStrictEqual(uploadPackRequests.map((lines) => lines.filter((l) => l.startsWith('deepen '))), [[]],
+		'no depth is negotiated for a repository that is not shallow');
+	assert.strictEqual(fs.existsSync(path.join(dir, '.git', 'shallow')), false,
+		'and no shallow boundary is written');
+
+	assert.strictEqual(result.newOid, thirdOid);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'wp-config.php'), 'utf8'), 'third\n');
+	// The history is still walkable, which is the whole point of the partial
+	// clone: the commit the site started on is reachable from the new tip.
+	const log = await git.log({ fs, dir, ref: 'HEAD' });
+	assert.deepStrictEqual(log.map((entry) => entry.oid), [thirdOid, secondOid, firstOid, baseOid]);
 });
 
 test('updateToLatestTrunk: reports upToDate when the remote trunk has not moved (issue #147)', async (t) => {

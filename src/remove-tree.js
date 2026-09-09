@@ -11,10 +11,11 @@
 // spike hit EPERM on every packaged Windows run; the CI suite proves the
 // POSIX half.
 //
-// Today the app mostly gets away with plain removal because isomorphic-git
-// sets no attribute. Any real Git writing into a checkout changes that — a
-// mentor making a commit with their own tools does — and `sites:delete`
-// swallowed whatever went wrong besides (#381).
+// Sites the old engine made got away with plain removal because isomorphic-git
+// sets no attribute. Since #385 the app's own clone is a real Git, so every new
+// site carries read-only objects from the first minute, the same as a mentor
+// making a commit with their own tools — and `sites:delete` used to swallow
+// whatever went wrong besides (#381).
 //
 // The shape: try the cheap removal first, and only when it fails with a
 // permission error walk whatever survived, restore the write bit, and remove

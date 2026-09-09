@@ -61,6 +61,15 @@ test('a host that points at its own Git through the real process env still gets 
 	}
 });
 
+// The locale the app reads Git's own words in. Git for Windows ships the
+// gettext translations, so a contributor on a localised machine would get
+// translated progress phases and a translated `fatal:` line — the two things
+// git-clone.cjs parses, with no porcelain form to fall back on.
+test('the environment pins the locale, so Git speaks the language the parsers read', () => {
+	const env = buildGitEnv({ baseEnv: { HOME: '/home/mentor', LANG: 'ja_JP.UTF-8', LANGUAGE: 'ja', LC_ALL: 'ja_JP.UTF-8' } });
+	assert.equal(env.LC_ALL, 'C');
+});
+
 test('the environment pins host config off and prompting off', () => {
 	const env = buildGitEnv({ baseEnv: { HOME: '/home/contributor', PATH: '/usr/bin' } });
 	assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');

@@ -3538,16 +3538,16 @@ test('dir:show refuses a path the registry does not hold, and logs it', async ()
 // --- creating a site, and opening it while it is still being created -----
 //
 // This handler was listed as NOT_REACHABLE, on the grounds that it clones
-// wordpress-develop over the network. It does not have to: `resolveStubs`
-// resolves bare packages through `require.resolve`, so `isomorphic-git` is
-// stubbable like any other module and the whole handler runs offline. That
+// wordpress-develop over the network. It does not have to: the clone lives in
+// its own module (git-clone.cjs, #385), so `cloneSite` is stubbable like any
+// other and the whole handler runs offline. That
 // matters here beyond coverage — #180 is a bug about *when* things are true
 // during the clone, and only a test that can be inside the clone can see it.
 
 // Runs `wordpress:setup` with a stubbed clone, and calls `duringClone` at the
 // moment the real clone would be running: the directory exists, nothing is in
 // the store yet. `clone` can be made to fail instead.
-async function runSetup({ duringClone, cloneFails = false, existing = [], extraStubs = {} } = {}) {
+async function runSetup({ duringClone, cloneFails = false, existing = [], extraStubs = {}, senderDestroyed = false } = {}) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-wiring-setup-'));
 	for (const name of existing) fs.mkdirSync(path.join(root, name));
 
@@ -3555,22 +3555,33 @@ async function runSetup({ duringClone, cloneFails = false, existing = [], extraS
 	const seen = [];
 	let inside;
 
-	const clone = async ({ dir }) => {
+	const clone = async ({ dir, onProgress }) => {
+		// The real clone reports progress from a stderr listener, and writes
+		// into the directory before it can fail: both are what the handler
+		// around it has to survive.
+		if (onProgress) onProgress({ phase: 'Receiving objects', percent: 42, loaded: 42, total: 100 });
 		if (duringClone) inside = await duringClone({ dir, root, main, settings });
-		if (cloneFails) throw new Error('clone failed');
+		if (cloneFails) {
+			fs.writeFileSync(path.join(dir, 'half-written'), 'partial\n');
+			throw new Error('clone failed');
+		}
 	};
 
 	const main = loadMain({
 		stubs: {
 			...silentLogging(),
 			...settings.stubs,
-			'isomorphic-git': { clone },
-			'./trunk-update': { ensureAutocrlf: async () => {}, readTrunkInfo: async () => ({ trunkOid: 'abc', trunkDate: '2026-01-01' }) },
+			'./git-clone.cjs': { cloneSite: clone },
+			'./trunk-update': { readTrunkInfo: async () => ({ trunkOid: 'abc', trunkDate: '2026-01-01' }) },
 			...extraStubs
 		}
 	});
 
 	const event = createIpcEvent();
+	if (senderDestroyed) {
+		event.sender.isDestroyed = () => true;
+		event.sender.send = () => { throw new Error('Object has been destroyed'); };
+	}
 	const settled = await main.invokeWith('wordpress:setup', event, root, { siteName: 'demo', siteLabel: 'Demo' })
 		.then((siteDir) => ({ siteDir }), (error) => ({ error }));
 
@@ -3617,9 +3628,25 @@ test('a clone that fails leaves nothing registered and nothing in flight', async
 	assert.match(String(error), /clone failed/);
 	assert.deepEqual(settings.values.sites, []);
 	assert.deepEqual(settings.values.siteMeta, {});
+	// And nothing is left on disk either: the handler creates the directory
+	// before the clone starts and the clone writes into it, so without the
+	// removal the next "Add a site" would adopt a half-written repository
+	// (#180's other half). Drop the catch and this is the assertion that fails.
+	assert.equal(fs.existsSync(path.join(root, 'demo')), false, 'the half-written clone is removed');
 	// The entry is released however the setup ends, so the path is refused again
 	// rather than staying openable — and, more importantly, staying undeletable.
 	assert.equal((await main.invoke('dir:show', path.join(root, 'demo'))).ok, false);
+});
+
+// Closing the window does not quit the app on macOS, and the clone runs on
+// past it. Progress arrives on a stderr listener now, outside any promise
+// chain, so a send into the dead webContents is an uncaught exception in the
+// main process rather than a rejected invoke.
+test('a window closed while the clone runs does not take the setup down with it', async () => {
+	const { root, settings, siteDir } = await runSetup({ senderDestroyed: true });
+
+	assert.equal(siteDir, path.join(root, 'demo'));
+	assert.deepEqual(settings.values.sites, [siteDir], 'the site is registered even with nobody listening');
 });
 
 test('a name already taken on disk is the one that opens, from the first moment', async () => {

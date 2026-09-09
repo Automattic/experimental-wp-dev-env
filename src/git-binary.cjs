@@ -77,7 +77,18 @@ const PINNED_ENV = Object.freeze({
 	// /dev/null as "no file" for this variable, and Git for Windows maps the
 	// name itself, so the literal works on every platform.
 	GIT_CONFIG_GLOBAL: '/dev/null',
-	GIT_TERMINAL_PROMPT: '0'
+	GIT_TERMINAL_PROMPT: '0',
+	// Git's human-facing output is translated through gettext, and Git for
+	// Windows ships the translations (the macOS dugite payload has none, so
+	// nothing here or in CI would ever show it). The one place the app reads
+	// that output is the clone's progress and its `fatal:` line
+	// (git-clone.cjs); on a localised Windows the phase names come back
+	// translated, and a non-Latin locale means the contributor watches a
+	// several-minute clone with no progress at all. `C` is the untranslated
+	// locale, and it also pins the number formatting the parsers assume.
+	// LANGUAGE, which would otherwise outrank it, is ignored by gettext once
+	// the locale is C.
+	LC_ALL: 'C'
 });
 
 // Arguments every Git call site puts before its own. `credential.helper` is

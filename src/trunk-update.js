@@ -24,6 +24,31 @@ const {
 const { readCommitInfo, resolveRef, statusRows, readBlobs, blobOid } = require('./git-read.cjs');
 
 /**
+ * What `depth` the trunk fetch may ask for, which is not the same answer for
+ * every site any more (#385). A site the old engine created is shallow at
+ * depth 1, and a depth-1 re-fetch is what keeps it that way — dropping it
+ * would pull the whole of wordpress-develop's history on every update. A site
+ * the bundled Git created is a partial clone: it has the full commit history
+ * and no `.git/shallow`, and asking for depth 1 there would *make* it
+ * shallow, because isomorphic-git applies the server's `shallow <newTip>`
+ * lines before the packfile is written, fails to read the tip it was just
+ * told about, and records the shallow boundary anyway. That would cut off at
+ * the first update the history the clone paid 57 MB for, and with it the
+ * merge base every pull request needs (#351).
+ *
+ * `.git/shallow` is Git's own marker for the first kind, written by the
+ * shallow clone and removed when a repository is unshallowed, so the
+ * repository answers the question itself.
+ *
+ * @param {string}    dir
+ * @param {typeof fs} [fileSystem]
+ * @return {{depth?: number}} Spread into the fetch options.
+ */
+function fetchDepth(dir, fileSystem = fs) {
+	return fileSystem.existsSync(path.join(dir, '.git', 'shallow')) ? { depth: 1 } : {};
+}
+
+/**
  * Give isomorphic-git a Windows-only, in-memory view of core.autocrlf=true
  * when the repository has no explicit local value. Native Git may have
  * checked the worktree out as CRLF because of the contributor's global config,
@@ -252,8 +277,9 @@ async function discardToBase(dir, baseOid) {
  * "the working tree was reset" would discard state — an applied patch's record
  * — over a failure that touched no file.
  *
- * Shallow-clone safe: a depth-1 re-fetch negotiates a new shallow tip, and
- * the forced checkout resets tracked files while untracked ones survive.
+ * The fetch depth follows the repository rather than being fixed: see
+ * `fetchDepth`. Either way the forced checkout resets tracked files while
+ * untracked ones survive.
  *
  * @param {Object}   root0
  * @param {string}   root0.dir
@@ -271,7 +297,7 @@ async function updateToLatestTrunk({ dir, url, onLog = () => {} }) {
 			fs: gitFs, http, dir, url,
 			ref: 'trunk',
 			singleBranch: true,
-			depth: 1,
+			...fetchDepth(dir),
 			tags: false,
 			onProgress: (evt) => onLog(`${evt.phase || 'fetch'} ${evt.loaded || 0}/${evt.total || 0}\r`)
 		});
@@ -326,6 +352,7 @@ async function updateToLatestTrunk({ dir, url, onLog = () => {} }) {
 module.exports = {
 	ensureAutocrlf,
 	createCrlfCompatibleFs,
+	fetchDepth,
 	readTrunkInfo,
 	collectDirtyFiles,
 	discardChanges,
