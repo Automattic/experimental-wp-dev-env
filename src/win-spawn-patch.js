@@ -13,10 +13,11 @@
 // tools/gutenberg/download.js extracts the Gutenberg artifact with a bare
 // `spawn('tar', ['-xzf', 'C:\…', …])`, and Git for Windows puts GNU tar ahead of
 // Windows's own bsdtar on PATH. GNU tar reads `C:` as a remote host and the build
-// dies at gutenberg:verify. A `tar.cmd` in the shim dir would only run through
-// cmd.exe, so the bare name is redirected here instead, straight to
-// %SystemRoot%\System32\tar.exe, no shell and no quoting. It is the one tool the
-// build spawns bare that a host install shadows with an incompatible one.
+// dies at gutenberg:verify. A `tar.cmd` in the shim dir would have to run through
+// cmd.exe like any other script below, so the bare name is redirected here
+// instead, straight to %SystemRoot%\System32\tar.exe, no shell and no quoting.
+// It is the one tool the build spawns bare that a host install shadows with an
+// incompatible one.
 //
 // Deliberately self-contained (Node built-ins only): this file is copied into the
 // temp shim dir and required from there, because --require into a path inside
@@ -118,13 +119,13 @@ function resolveSpawnTarget({
 
 	// A bare `tar` goes to Windows's bsdtar, which understands drive letters. An
 	// explicit path is somebody's deliberate choice and is kept; a Windows with no
-	// System32\tar.exe (before 10 1803) is left exactly as it was.
+	// System32\tar.exe (before 10 1803) falls through to the same handling as any
+	// other command.
 	if (name === 'tar' && !hasDirectory(file)) {
 		const systemTar = lookup(path.win32.join(systemRoot(env), 'System32', 'tar.exe'), env);
 		if (systemTar) {
 			return { file: systemTar, args: [...args], options };
 		}
-		return null;
 	}
 
 	// Fallback for every other .cmd/.bat shim (bin stubs of npm packages, etc.):
@@ -191,4 +192,4 @@ if (process.env.WPTK_SPAWN_PATCH === '1') {
 	});
 }
 
-module.exports = { resolveSpawnTarget, applyPatch, PATCH_MARKER };
+module.exports = { resolveSpawnTarget, applyPatch, defaultLookup, PATCH_MARKER };

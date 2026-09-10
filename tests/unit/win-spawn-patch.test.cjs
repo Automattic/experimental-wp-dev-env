@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-const { resolveSpawnTarget, applyPatch, PATCH_MARKER } = require('../../src/win-spawn-patch.js');
+const { resolveSpawnTarget, applyPatch, defaultLookup, PATCH_MARKER } = require('../../src/win-spawn-patch.js');
 
 // The Windows shim layout ensureNodeShimDir() writes, as the patch sees it.
 const WIN = {
@@ -142,15 +145,43 @@ test('SystemRoot is honoured, and C:\\Windows is the fallback when it is unset',
 	assert.equal(fallback.file, SYSTEM_TAR);
 });
 
-test('a bare `tar` is left alone when System32 has no tar.exe', () => {
-	const target = resolveSpawnTarget({
+test('without System32\\tar.exe a bare `tar` gets the same handling as any other command', () => {
+	// A tar.exe found on PATH is left alone, so whatever tar the host has still
+	// runs: today's failure, but not a new one.
+	const gnu = resolveSpawnTarget({
 		...WIN,
-		lookup: () => null,
+		lookup: (file) => (String(file).toLowerCase() === 'tar' ? 'C:\\Program Files\\Git\\usr\\bin\\tar.exe' : null),
 		file: 'tar',
 		args: ['-xzf', 'a.tgz']
 	});
-	// Whatever tar PATH finds still runs: today's failure, but not a new one.
-	assert.equal(target, null);
+	assert.equal(gnu, null);
+
+	// A tar.cmd on PATH still reaches the shell fallback; the tar branch must not
+	// swallow the call on its way there.
+	const script = resolveSpawnTarget({
+		...WIN,
+		lookup: (file) => (String(file).toLowerCase() === 'tar' ? 'C:\\tools\\tar.cmd' : null),
+		file: 'tar',
+		args: ['-xzf', 'a.tgz']
+	});
+	assert.equal(script.options.shell, true);
+	assert.equal(script.file, '"C:\\tools\\tar.cmd"');
+
+	assert.equal(resolveSpawnTarget({ ...WIN, lookup: () => null, file: 'tar', args: [] }), null);
+});
+
+// The tar branch hands defaultLookup a full path, so its job there is plain
+// existence, not a PATH search. Pinned on a real file: the other tar tests all
+// inject lookup, and this is the one thing the production path relies on.
+test('defaultLookup with a path that has a directory reports whether that file exists', (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wptk-tar-lookup-'));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const present = path.join(dir, 'tar.exe');
+	fs.writeFileSync(present, '');
+
+	const env = { Path: 'C:\\somewhere-else', PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+	assert.equal(defaultLookup(present, env), present);
+	assert.equal(defaultLookup(path.join(dir, 'missing.exe'), env), null);
 });
 
 test('an explicit path to some other tar is not rewritten', () => {
