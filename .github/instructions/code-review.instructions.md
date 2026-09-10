@@ -10,7 +10,7 @@ What an automated reviewer should look for in this repo, and how to run that rev
 
 The procedure below assumes an agent that can run commands. Copilot and CodeRabbit cannot; they should skip to **Scope** and treat the rest as the standard to review against.
 
-CodeRabbit runs this on every non-draft pull request to `trunk`. It is still the author's pass first, before a human or a bot reads the diff — which is the point: a finding fixed now costs one message, the same finding on the PR costs a review cycle. The producer is responsible for handing over a reviewable change, not the reviewer for reconstructing the context.
+CodeRabbit is configured to review every non-draft pull request to `trunk`; availability and usage limits can prevent a review from running. It is still the author's pass first, before a human or a bot reads the diff — which is the point: a finding fixed now costs one message, the same finding on the PR costs a review cycle. The producer is responsible for handing over a reviewable change, not the reviewer for reconstructing the context.
 
 ## Running the review
 
@@ -37,7 +37,7 @@ If ESLint fails, `npm run lint:fix` handles the mechanical part. Check what it r
 
 **3. Review the five dimensions below.** Read the surrounding files, not just the diff — a diff rarely shows that a helper already handles the case, and the reporting bar requires verifying a finding before asserting it.
 
-Where the tool allows it, run this pass with fresh context — a subagent given the diff and this file, rather than the session that wrote the code. CodeRabbit will run it again on the pull request, but a reviewer that already believes the change is correct is still the main way this pass stops working.
+Where the tool allows it, run this pass with fresh context — a subagent given the diff and this file, rather than the session that wrote the code. CodeRabbit may review it again on the pull request, but a reviewer that already believes the change is correct is still the main way this pass stops working.
 
 **4. Report, then offer.** Format below. Ask before changing anything: the author decides what is a real finding, which is the whole reason this happens before the PR rather than after.
 
@@ -155,9 +155,13 @@ macOS and Windows are the primary targets; Linux artifacts are published too. CI
 
 Where this runs before the PR exists, that report goes in the chat: no GitHub comments, no files written. Where it runs on a PR, `[fix here]` findings become inline comments on the exact lines and the counts go in a single summary comment, with the style notes in a collapsed `<details>` block.
 
-**On a re-run, reconcile — do not re-review from scratch.** Mark each earlier finding resolved, still open, or obsolete. Re-asserting a fixed finding is the fastest way to get the whole review ignored.
+**Record what was actually reviewed.** Alongside the outcome, name the reviewer (person, bot, or separate agent context), the reviewed head SHA and base SHA, and whether the review completed, was partial, or did not run. Link to the review report when one exists; for a local agent review, include its result in the PR's collapsed review outcome. If uncommitted changes were included, identify that scope explicitly: the head SHA alone does not identify them. Once committed, verify that the published diff matches the reviewed work and record the resulting SHA; review any differences before claiming coverage of it.
 
-**Say when there is nothing.** "No findings across the five dimensions" in one line is a good review. Do not pad. Do not restate what the PR does — the author knows.
+**A successful check is not evidence of a completed review.** Read the review output before reporting "no findings". A bot can report success while skipping review because of a usage limit, configuration, or an error; record that as "not run" with the reason, not as zero findings. A partial review must name what remains unreviewed. If CodeRabbit is unavailable, a completed review against this standard by a person or a fresh agent context can cover the change; identify that reviewer and the covered revision explicitly. This is a reporting requirement, not a new CI check or permission to bypass merge protections.
+
+**On a re-run, reconcile and inspect subsequent changes.** Mark each earlier finding resolved, still open, or obsolete, and review changes since the recorded head and base, including their effect on the surrounding code. Re-asserting a fixed finding is the fastest way to get the whole review ignored, but checking only old findings can miss new problems. After a push, rebase, or base update, do not carry the old result forward automatically. If the reviewed changes and relevant context are unchanged, record that comparison and the new head and base SHAs; otherwise review the affected scope and update the outcome.
+
+**Say when there is nothing.** For a completed review, "No findings across the five dimensions" plus the revision and reviewer record above is enough. Do not pad. Do not restate what the PR does — the author knows.
 
 **Verify before claiming.** Read the surrounding file before asserting an invariant is broken; the diff alone often does not show that a helper already handles the case. A confident wrong finding costs more than a missed one.
 
