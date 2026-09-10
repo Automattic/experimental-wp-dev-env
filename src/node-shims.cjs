@@ -18,7 +18,10 @@
 // measurement showed NODE_OPTIONS did not survive every chain reliably: an
 // argument does, always, because it is not inherited at all. It also confines the
 // patch to processes that actually go through the shim, instead of leaking into
-// every unrelated Node process a build happens to start.
+// every unrelated Node process a build happens to start. The one other route to
+// Electron-as-Node is the Windows spawn patch, which redirects `spawn('node')`
+// straight to the binary; it re-attaches the same `--require` from
+// WPTK_NODE_COMPAT_PATH so both routes present the same runtime.
 
 // Set alongside the flag so the preload only acts when the app asked for it —
 // requiring the module in a test must not mutate the test's own process.

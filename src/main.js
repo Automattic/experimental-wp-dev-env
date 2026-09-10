@@ -250,6 +250,7 @@ function spawnRunner(runnerPath, args, { cwd, extraEnv = {} }) {
 			spawnPatchPath,
 			npmCliPath,
 			npxCliPath,
+			nodeCompatPath,
 			extraEnv
 		}),
 		shell: false,

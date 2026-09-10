@@ -75,7 +75,8 @@ function buildChildEnv({
 	execPath = process.execPath,
 	spawnPatchPath = null,
 	npmCliPath = null,
-	npxCliPath = null
+	npxCliPath = null,
+	nodeCompatPath = null
 } = {}) {
 	const isWindows = platform === 'win32';
 	const separator = isWindows ? ';' : ':';
@@ -114,6 +115,10 @@ function buildChildEnv({
 		env.WPTK_SPAWN_PATCH = '1';
 		if (npmCliPath) env.WPTK_NPM_CLI = npmCliPath;
 		if (npxCliPath) env.WPTK_NPX_CLI = npxCliPath;
+		// The spawns the patch redirects skip the node.cmd shim, so the patch
+		// re-attaches the compat preload itself (#275); this is where it is.
+		// A native path: it goes in as an argument, never through NODE_OPTIONS.
+		if (nodeCompatPath) env.WPTK_NODE_COMPAT_PATH = nodeCompatPath;
 	}
 	return { ...env, ...extraEnv };
 }
