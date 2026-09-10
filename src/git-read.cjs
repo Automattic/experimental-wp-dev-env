@@ -234,31 +234,22 @@ function parseLsTreeZ(buf) {
 }
 
 /**
- * `git merge-tree --write-tree -z --name-only` output → the merged tree, the
- * paths that conflicted, and what kind of conflict each is. The first field
- * is the tree oid (written even when there are conflicts, with conflict
- * markers inside); then, only on a conflict, one path per field until an
- * empty field closes that section. A path appears once per conflicting
- * stage, so it is listed once here.
+ * `git merge-tree --write-tree -z` output → the merged tree, the paths that
+ * conflicted, and what kind of conflict each is. The first field is the
+ * tree oid (written even when there are conflicts, with conflict markers
+ * inside); then, only on a conflict, one field per conflicting index entry,
+ * `<mode> <oid> <stage>\t<path>`, until an empty field closes that section.
+ * The informational messages after it are for a human and never read.
  *
- * After that come the informational records, `<count>`, that many paths,
- * a type, and a message, each its own field. Most are `Auto-merging` and
- * dropped; the `CONFLICT (…)` ones say what Git would print, and the word
- * in the message's parentheses is the precise kind (`content`, `add/add`,
- * `modify/delete`, `rename/delete`…; the record's own type says only
- * `contents` for the first two). The kind is what lets the refusal say
- * "deleted on one side" instead of "trunk changed the same lines" when
- * that is what happened (#351). A conflicted path with no record keeps no
- * kind, and the caller words it generically.
- *
- * That parenthesis is read from Git's human-facing message on purpose, the
- * one place this module does so: the machine-readable type cannot tell
- * `content` from `add/add`, and the message is the only field that can.
- * The `-z` framing around it is stable; a reworded message degrades to no
- * kind (a generic sentence), never to a wrong one; and the acceptance test
- * in git-read.integration.test.cjs compares the kinds with what `git merge`
- * prints on the pinned binary, so a Git upgrade that changes the wording
- * fails there rather than in a contributor's card.
+ * The stages are the kind (#351), the same way `git status` and every merge
+ * tool read them: stage 1 is the base, 2 ours, 3 theirs. All three present
+ * is a `content` clash; 2 and 3 with no base is `add/add`, both sides
+ * created the path; a base with only one side left is `modify/delete`,
+ * whichever side deleted. Those three are what a ticket and a moving trunk
+ * produce, and what the refusal has words for; any other combination (a
+ * rename tangle, a type change) keeps no kind and reads generically. Nothing
+ * here depends on Git's wording: the record layout is the porcelain, and a
+ * `--name-only` listing would have thrown the stages away.
  *
  * @param {Buffer} buf
  * @return {{tree: string, conflicts: string[], kinds: Object<string, string>}}
@@ -268,25 +259,26 @@ function parseMergeTreeZ(buf) {
 	const tree = (fields[0] || '').trim();
 	const conflicts = [];
 	// No prototype: a conflicted path named `__proto__` is a path, not a
-	// property, and `kinds[p]` must not read Object.prototype for it.
-	const kinds = Object.create(null);
-	let i = 1;
-	for (; i < fields.length; i++) {
+	// property, and `stages[p]` must not read Object.prototype for it.
+	const stages = Object.create(null);
+	for (let i = 1; i < fields.length; i++) {
 		if (fields[i].length === 0) break;
-		if (!conflicts.includes(fields[i])) conflicts.push(fields[i]);
+		const tab = fields[i].indexOf('\t');
+		if (tab === -1) continue;
+		const stage = Number(fields[i].slice(0, tab).split(' ')[2]);
+		const entryPath = fields[i].slice(tab + 1);
+		if (!conflicts.includes(entryPath)) conflicts.push(entryPath);
+		if (!stages[entryPath]) stages[entryPath] = new Set();
+		stages[entryPath].add(stage);
 	}
-	for (i += 1; i < fields.length;) {
-		const count = Number(fields[i]);
-		if (!Number.isInteger(count) || count < 0) break;
-		const paths = fields.slice(i + 1, i + 1 + count);
-		const type = fields[i + 1 + count] || '';
-		const message = fields[i + 2 + count] || '';
-		i += 3 + count;
-		if (!type.startsWith('CONFLICT')) continue;
-		const kind = (message.match(/^CONFLICT \(([^)]+)\)/) || type.match(/^CONFLICT \(([^)]+)\)/) || [])[1];
-		for (const p of paths) {
-			if (kind && conflicts.includes(p) && !kinds[p]) kinds[p] = kind;
-		}
+	// Built without a prototype for the same reason, then spread into a
+	// plain object (the spread defines own properties, `__proto__` included).
+	const kinds = Object.create(null);
+	for (const p of conflicts) {
+		const has = (...want) => want.every((stage) => stages[p].has(stage)) && stages[p].size === want.length;
+		if (has(1, 2, 3)) kinds[p] = 'content';
+		else if (has(2, 3)) kinds[p] = 'add/add';
+		else if (has(1, 2) || has(1, 3)) kinds[p] = 'modify/delete';
 	}
 	return { tree, conflicts, kinds: { ...kinds } };
 }
@@ -431,7 +423,7 @@ async function mergeTree(dir, { base, ours, theirs }, { run = runGit } = {}) {
 	// checked out would be pulled from the promisor mid-merge, with no
 	// timeout to bound it. Refusing with Git's reason beats waiting on a
 	// network the contributor may not have.
-	const { status, stdout } = await run(['merge-tree', '--write-tree', '-z', '--name-only', `--merge-base=${base}`, ours, theirs], { cwd: dir, okCodes: [0, 1], extraEnv: { GIT_NO_LAZY_FETCH: '1' } });
+	const { status, stdout } = await run(['merge-tree', '--write-tree', '-z', `--merge-base=${base}`, ours, theirs], { cwd: dir, okCodes: [0, 1], extraEnv: { GIT_NO_LAZY_FETCH: '1' } });
 	const parsed = parseMergeTreeZ(stdout);
 	// The exit code is the answer; the paths are the detail. A conflict Git
 	// reports in a shape the parser does not read is still a conflict.

@@ -158,51 +158,45 @@ test('isLegacySite reads no config when the repository is not shallow (#385)', a
 	assert.deepEqual(seen, []);
 });
 
-test('merge-tree -z --name-only: the tree, then the conflicted paths once each, then the kind of each conflict (#385, #351)', () => {
+test('merge-tree -z: the tree, then each conflicted path once with its kind read from the stages (#385, #351)', () => {
 	assert.deepEqual(read.parseMergeTreeZ(Buffer.from('abc123\0')), { tree: 'abc123', conflicts: [], kinds: {} });
 	assert.deepEqual(read.parseMergeTreeZ(Buffer.from('abc123\n')), { tree: 'abc123', conflicts: [], kinds: {} });
-	const conflicted = z('abc123', 'src/wp-login.php', 'src/wp-login.php', 'with space.txt', '', '1', 'src/wp-login.php', 'Auto-merging', 'Auto-merging src/wp-login.php\n', '2', 'src/wp-login.php', 'with space.txt', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict\n');
-	assert.deepEqual(read.parseMergeTreeZ(conflicted), { tree: 'abc123', conflicts: ['src/wp-login.php', 'with space.txt'], kinds: { 'src/wp-login.php': 'content', 'with space.txt': 'content' } });
 	assert.deepEqual(read.parseMergeTreeZ(Buffer.alloc(0)), { tree: '', conflicts: [], kinds: {} });
 
-	// The shapes Git 2.53 actually writes, captured from the bundled binary:
-	// an add/add is typed `contents` and only the message says `add/add`; a
-	// modify/delete has the same word in both; a path can carry an
-	// `Auto-merging` record before its CONFLICT one; the first CONFLICT wins.
-	const kinds = z('t', 'n', 'n', 'x', 'x', 'x', 'y', 'y', '',
-		'1', 'n', 'Auto-merging', 'Auto-merging n\n',
-		'1', 'n', 'CONFLICT (contents)', 'CONFLICT (add/add): Merge conflict in n\n',
-		'1', 'x', 'Auto-merging', 'Auto-merging x\n',
-		'1', 'x', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict in x\n',
-		'1', 'y', 'CONFLICT (modify/delete)', 'CONFLICT (modify/delete): y deleted in abc and modified in def.  Version def of y left in tree.\n');
-	assert.deepEqual(read.parseMergeTreeZ(kinds), { tree: 't', conflicts: ['n', 'x', 'y'], kinds: { n: 'add/add', x: 'content', y: 'modify/delete' } });
-	// A record about a path that is not in the conflicted section (Git lists
-	// informational paths for clean auto-merges too) adds no kind.
-	const stray = z('t', 'x', '', '1', 'z', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict in z\n');
-	assert.deepEqual(read.parseMergeTreeZ(stray), { tree: 't', conflicts: ['x'], kinds: {} });
-	// A CONFLICT message with no parenthesis (a reworded Git) falls back to
-	// the record's coarse type, which the refusal has no clause for and so
-	// words generically: degraded, never wrong.
-	const reworded = z('t', 'q', '', '1', 'q', 'CONFLICT (contents)', 'Merge conflict in q\n');
-	assert.deepEqual(read.parseMergeTreeZ(reworded), { tree: 't', conflicts: ['q'], kinds: { q: 'contents' } });
-	// A record whose count is not a number ends the parse: the kinds read
-	// before it survive, the ones after it are dropped rather than guessed.
-	const malformed = z('t', 'a', 'b', '', '1', 'a', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict in a\n', 'x', 'b', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict in b\n');
-	assert.deepEqual(read.parseMergeTreeZ(malformed), { tree: 't', conflicts: ['a', 'b'], kinds: { a: 'content' } });
+	// The bytes the bundled Git 2.53.0 wrote for one merge with all three
+	// kinds at once, captured as they came: a content clash in `src/x.php`,
+	// both sides adding `src/n.php`, and `src/gone with space.php` deleted on
+	// one side and edited on the other. The informational records after the
+	// empty field are in the capture too, and are never read.
+	const captured = Buffer.from('NDk3M2Q4MmMzZDZjMGUzZWI4NDdjMzU4ZDQ0YmQ3YmE4NWY2ZTFiYgAxMDA2NDQgNzg5ODE5MjI2MTNiMmFmYjYwMjUwNDJmZjZiZDg3OGFjMTk5NGU4NSAxCXNyYy9nb25lIHdpdGggc3BhY2UucGhwADEwMDY0NCBhYjdkYjhlNDc1ZTAwZmViYTVhMTI0NjI3MDI4NzZjMzM5ZDBjMDc4IDMJc3JjL2dvbmUgd2l0aCBzcGFjZS5waHAAMTAwNjQ0IDgxOWQ5OTM3OGVlMzVjMTE0MzlhMGJmNWMyMmI2MjNhOTkyOGQyZGQgMglzcmMvbi5waHAAMTAwNjQ0IDNlYWM2MmVjNDg0YTBjNzUwNTE2NDdhOWI0NmU3NGNjMzBlMjkyYmMgMwlzcmMvbi5waHAAMTAwNjQ0IGRlOTgwNDQxYzNhYjAzYThjMDdkZGExYWQyN2I4YTExZjM5ZGViMWUgMQlzcmMveC5waHAAMTAwNjQ0IGY0ZWE3MDJkNDc5ZWYxMzg4ZGRlNjBlMzQzMDc5MWE5YzZlYjhkNGYgMglzcmMveC5waHAAMTAwNjQ0IDNiNmY0MGFmMTMxMTA0Y2NhM2E4NGU3YTc2MGMzYzM0NzUzNzcxMDYgMwlzcmMveC5waHAAADEAc3JjL2dvbmUgd2l0aCBzcGFjZS5waHAAQ09ORkxJQ1QgKG1vZGlmeS9kZWxldGUpAENPTkZMSUNUIChtb2RpZnkvZGVsZXRlKTogc3JjL2dvbmUgd2l0aCBzcGFjZS5waHAgZGVsZXRlZCBpbiAyN2RjM2ExNjA0ZjVmN2Y3M2I3M2I5YzM3NjE4NmI5Y2QzNTExZmI3IGFuZCBtb2RpZmllZCBpbiBlMWNlNTdhYmE3NmI0MmYzM2VjMWE2M2FmY2E1ZjQ2ZTVkMTg2ZWJiLiAgVmVyc2lvbiBlMWNlNTdhYmE3NmI0MmYzM2VjMWE2M2FmY2E1ZjQ2ZTVkMTg2ZWJiIG9mIHNyYy9nb25lIHdpdGggc3BhY2UucGhwIGxlZnQgaW4gdHJlZS4KADEAc3JjL24ucGhwAEF1dG8tbWVyZ2luZwBBdXRvLW1lcmdpbmcgc3JjL24ucGhwCgAxAHNyYy9uLnBocABDT05GTElDVCAoY29udGVudHMpAENPTkZMSUNUIChhZGQvYWRkKTogTWVyZ2UgY29uZmxpY3QgaW4gc3JjL24ucGhwCgAxAHNyYy94LnBocABBdXRvLW1lcmdpbmcAQXV0by1tZXJnaW5nIHNyYy94LnBocAoAMQBzcmMveC5waHAAQ09ORkxJQ1QgKGNvbnRlbnRzKQBDT05GTElDVCAoY29udGVudCk6IE1lcmdlIGNvbmZsaWN0IGluIHNyYy94LnBocAoA', 'base64');
+	assert.deepEqual(read.parseMergeTreeZ(captured), {
+		tree: '4973d82c3d6c0e3eb847c358d44bd7ba85f6e1bb',
+		conflicts: ['src/gone with space.php', 'src/n.php', 'src/x.php'],
+		kinds: { 'src/gone with space.php': 'modify/delete', 'src/n.php': 'add/add', 'src/x.php': 'content' }
+	});
+	// The same binary, a clean merge: the tree and nothing else.
+	assert.deepEqual(read.parseMergeTreeZ(Buffer.from('YzRkNzZjOGFiMjM4NDA5NDI0Yzk0ZDliYTlhOGQ2ZmI3MzcyNTViMwA=', 'base64')), { tree: 'c4d76c8ab238409424c94d9ba9a8d6fb737255b3', conflicts: [], kinds: {} });
+
+	// Shapes the app has no words for keep no kind: a lone stage (one side
+	// of a rename/rename), and a stage Git does not use.
+	const entry = (stage, p) => `100644 0000000000000000000000000000000000000000 ${stage}\t${p}`;
+	assert.deepEqual(read.parseMergeTreeZ(z('t', entry(2, 'moved.php'), entry(1, 'weird.php'), entry(4, 'weird.php'), '')), { tree: 't', conflicts: ['moved.php', 'weird.php'], kinds: {} });
 	// A path named like a prototype property is a path.
-	const proto = z('t', '__proto__', '', '1', '__proto__', 'CONFLICT (contents)', 'CONFLICT (content): Merge conflict in __proto__\n');
+	const proto = z('t', entry(1, '__proto__'), entry(2, '__proto__'), entry(3, '__proto__'), '');
 	assert.deepEqual(Object.entries(read.parseMergeTreeZ(proto).kinds), [['__proto__', 'content']]);
+	// A field with no tab is not an entry and is skipped, the rest still read.
+	assert.deepEqual(read.parseMergeTreeZ(z('t', 'garbage', entry(2, 'a'), entry(3, 'a'), '')), { tree: 't', conflicts: ['a'], kinds: { a: 'add/add' } });
 });
 
 test('mergeTree is one merge-tree call whose exit code says whether the tree is usable (#385)', async () => {
 	const calls = [];
 	const run = async (args, options) => {
 		calls.push({ args, options });
-		return args.includes('bad') ? { status: 1, stdout: z('t2', 'a.php', ''), stderr: '' } : { status: 0, stdout: Buffer.from('t1\0'), stderr: '' };
+		return args.includes('bad') ? { status: 1, stdout: z('t2', '100644 0000000000000000000000000000000000000000 2\ta.php', ''), stderr: '' } : { status: 0, stdout: Buffer.from('t1\0'), stderr: '' };
 	};
 	assert.deepEqual(await read.mergeTree('/sites/wp', { base: 'b', ours: 'o', theirs: 'good' }, { run }), { tree: 't1', conflicted: false, conflicts: [], kinds: {} });
 	assert.deepEqual(await read.mergeTree('/sites/wp', { base: 'b', ours: 'o', theirs: 'bad' }, { run }), { tree: 't2', conflicted: true, conflicts: ['a.php'], kinds: {} });
-	assert.deepEqual(calls[0].args, ['merge-tree', '--write-tree', '-z', '--name-only', '--merge-base=b', 'o', 'good']);
+	assert.deepEqual(calls[0].args, ['merge-tree', '--write-tree', '-z', '--merge-base=b', 'o', 'good']);
 	assert.deepEqual(calls[0].options, { cwd: '/sites/wp', okCodes: [0, 1], extraEnv: { GIT_NO_LAZY_FETCH: '1' } });
 	// Exit 1 with a path list the parser cannot read is still a conflict.
 	const mute = async () => ({ status: 1, stdout: Buffer.from('t3\0'), stderr: '' });
