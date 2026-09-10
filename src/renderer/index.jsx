@@ -349,6 +349,10 @@ function App() {
   useEffect(() => { (async () => { try { setWebAvailable(Boolean(await window.api.playgroundWebAvailable())); } catch {} })(); }, []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeSite, setActiveSite] = useState(null);
+  const [deletingSites, setDeletingSites] = useState([]);
+  // State paints the progress, while the ref closes the same-tick gap before
+  // React renders it and prevents two delete requests for one site.
+  const deletingSitesRef = useRef(new Set());
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createSiteName, setCreateSiteName] = useState('');
   const [createSiteDir, setCreateSiteDir] = useState('');
@@ -681,15 +685,25 @@ function App() {
   }, [setSiteMeta]);
 
   const onDelete = useCallback(async (sitePath) => {
-    const result = await window.api.deleteSite(sitePath);
-    await refresh();
-    removeSetupLog(sitePath);
-    // A deletion that half-happened must not look like one that worked (#381).
-    // The sentence and the decision to show it live in confirmations.cjs,
-    // where the suite can reach them; the error tone stays until dismissed.
-    const failure = deleteFailureMessage(result);
-    if (failure) {
-      confirm(failure, { tone: 'error' });
+    if (deletingSitesRef.current.has(sitePath)) return;
+    deletingSitesRef.current.add(sitePath);
+    setDeletingSites((current) => (current.includes(sitePath) ? current : [...current, sitePath]));
+    let result;
+    try {
+      try {
+        result = await window.api.deleteSite(sitePath);
+      } catch {
+        result = { ok: false, reason: 'remove-failed', path: sitePath };
+      }
+      try { await refresh(); } catch {}
+      if (result?.ok) removeSetupLog(sitePath);
+      // A failed deletion stays visible and retryable. The error tone keeps its
+      // notice on screen until dismissed rather than expiring on a timer.
+      const failure = deleteFailureMessage(result);
+      if (failure) confirm(failure, { tone: 'error' });
+    } finally {
+      deletingSitesRef.current.delete(sitePath);
+      setDeletingSites((current) => current.filter((path) => path !== sitePath));
     }
   }, [refresh, removeSetupLog, confirm]);
 
@@ -804,6 +818,10 @@ function App() {
             const meta = siteMeta?.[sitePath] || {};
             const siteName = (meta.label && meta.label.trim()) || pathBasename(sitePath);
             const isActive = activeSite === sitePath;
+            const isDeleting = deletingSites.includes(sitePath);
+            let siteButtonMinHeight = 40;
+            if (sidebarCollapsed) siteButtonMinHeight = 36;
+            else if (isDeleting) siteButtonMinHeight = 58;
             // Staleness surfaces in the sidebar before the site is even
             // opened (#94): amber = old trunk snapshot, red = an update that
             // moved trunk but never finished install/build.
@@ -824,6 +842,10 @@ function App() {
               <Button
                 key={sitePath}
                 onClick={() => handleSelectSite(sitePath)}
+                aria-busy={isDeleting}
+                aria-label={isDeleting ? `${siteName}, Deleting` : undefined}
+                disabled={isDeleting}
+                accessibleWhenDisabled={isDeleting}
                 variant="tertiary"
                 isSmall
                 isPressed={isActive}
@@ -835,15 +857,24 @@ function App() {
                   color: '#f7f7f7',
                   padding: sidebarCollapsed ? '8px 0' : '10px 12px',
                   borderRadius: 6,
+                  height: 'auto',
+                  minHeight: siteButtonMinHeight,
+                  opacity: 1,
                 }}
               >
-                {sidebarCollapsed ? (
+                {sidebarCollapsed && !isDeleting ? (
                   <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>{siteName.slice(0, 1).toUpperCase()}{staleDot}</span>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
-                    <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>{siteName}{staleDot}</span>
+                ) : null}
+                {sidebarCollapsed && isDeleting ? <Spinner style={{ width: 16, height: 16, margin: 0 }} /> : null}
+                {!sidebarCollapsed ? (
+                  <div style={{ width: '100%', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+                      <span style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>{siteName}{staleDot}</span>
+                      {isDeleting ? <span style={{ fontSize: 11, lineHeight: 1.3, color: 'rgba(255,255,255,0.72)' }}>Deleting site…</span> : null}
+                    </div>
+                    {isDeleting ? <Spinner style={{ width: 16, height: 16, margin: 0, flexShrink: 0 }} /> : null}
                   </div>
-                )}
+                ) : null}
               </Button>
             );
           })}
@@ -938,6 +969,7 @@ function App() {
                       editor={detectedApplications}
                       wporg={wporg}
                       isPending={pendingSites.includes(s)}
+                      isDeleting={deletingSites.includes(s)}
                       setupLogs={setupLogsBySite[s] || ''}
                       switchProgress={switchProgressBySite[s] || null}
                       onClearSwitchNotices={clearSwitchNotices}
@@ -1195,7 +1227,7 @@ function TerminalCommandLink({ command, onPrefill, disabled }) {
   );
 }
 
-function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSiteMetaPatch, onDelete, onRename, onCreateSite, editor, wporg, isPending = false, setupLogs = '', isActive = false, switchProgress = null, carriedWork = null, onClearSwitchNotices = null }) {
+function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSiteMetaPatch, onDelete, onRename, onCreateSite, editor, wporg, isPending = false, isDeleting = false, setupLogs = '', isActive = false, switchProgress = null, carriedWork = null, onClearSwitchNotices = null }) {
   // The window's confirmation queue (#253): confirm(message) after an action
   // completes, so the outcome is announced rather than left silent or buried in
   // the terminal.
@@ -4321,7 +4353,9 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
               // the backstop, and not offering a control that cannot work is
               // the actual answer.
               ...(isPending ? [] : [
-                { title:'Delete this site', onClick:()=>confirmAnd('Delete this site from disk? This cannot be undone.', ()=>onDelete(sitePath)) }
+                isDeleting
+                  ? { title: 'Deleting…', isDisabled: true }
+                  : { title:'Delete this site', onClick:()=>confirmAnd('Delete this site from disk? This cannot be undone.', ()=>onDelete(sitePath)) }
               ])
             ]}
           />

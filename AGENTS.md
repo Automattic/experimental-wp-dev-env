@@ -78,6 +78,10 @@ Line breaks still mean something everywhere else, and none of this touches them:
 
 See `package.json` scripts. To run a single test file (not exposed as a script): `node --test tests/unit/azure-sign.test.cjs`.
 
+Do not run Electron or E2E tests from a worktree without its own `node_modules`. Install dependencies in that worktree first, and do not rely on `NODE_PATH` from another worktree for Electron tests.
+
+Prefer the simplest fix for reproducible user-facing failures. Do not add defensive state or branches for hypothetical edge cases unless a test demonstrates a realistic path.
+
 **[TESTING.md](TESTING.md) is the canonical description of the suite** — the five layers it is made of, which one a new test belongs in, what each layer is blind to, and how to read a failure. Read it before adding or moving a test; do not restate it elsewhere.
 
 When writing manual test instructions, inspect the current renderer flow first and distinguish actions that happen automatically after linking a ticket from controls used only to retry or refresh them. Do not tell a tester to click a control when the app already starts that operation.

@@ -104,17 +104,17 @@ test('a dry run says no pull request was opened rather than "#undefined" (issue 
 	);
 });
 
-test('a deletion that half-failed names the surviving path and the code (issue #381)', () => {
+test('a failed deletion says the listed site can be retried and names the code (#414)', () => {
 	assert.strictEqual(
 		deleteFailureMessage({ ok: false, reason: 'remove-failed', path: '/sites/demo', code: 'EPERM' }),
-		'The site was removed from the list, but its folder could not be deleted (EPERM) and is still at /sites/demo'
+		'The site is still listed because its folder could not be deleted (EPERM). Close anything using it, then try again. Folder: /sites/demo'
 	);
 });
 
-test('a deletion failure without a code still reads as a sentence (issue #381)', () => {
+test('a deletion failure without a code still reads as a sentence (#414)', () => {
 	assert.strictEqual(
 		deleteFailureMessage({ ok: false, reason: 'remove-failed', path: '/sites/demo' }),
-		'The site was removed from the list, but its folder could not be deleted and is still at /sites/demo'
+		'The site is still listed because its folder could not be deleted. Close anything using it, then try again. Folder: /sites/demo'
 	);
 });
 

@@ -66,10 +66,11 @@ function describeRefusedSite(sitePath) {
 }
 
 // The `sites:delete` handler's body, kept out of main.js so both sides of the
-// guard can be tested without an Electron process. `forget` drops the path from
-// the store, `remove` is the real tree removal in the app, and both are recording
-// stubs in the tests. A path that is not registered performs neither: no store
-// mutation and no removal, just a logged refusal.
+// guard can be tested without an Electron process. `remove` is the real tree
+// removal in the app, and only after it succeeds does `forget` drop the path
+// from the store. This order keeps a failed deletion visible and retryable. A
+// path that is not registered performs neither: no store mutation and no
+// removal, just a logged refusal.
 async function deleteRegisteredSite(sitePath, { sites, pending, forget, remove, onRefused } = {}) {
 	// Checked before the registry, and separately from it. A site whose clone is
 	// still running is the one case where `remove` would delete a tree another
@@ -87,8 +88,8 @@ async function deleteRegisteredSite(sitePath, { sites, pending, forget, remove, 
 		return false;
 	}
 
-	forget();
 	await remove(sitePath);
+	forget();
 	return true;
 }
 

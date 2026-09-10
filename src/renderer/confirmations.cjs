@@ -93,19 +93,18 @@ function prConfirmationMessage(res = {}) {
 /**
  * The notice for a site deletion, or null when there is nothing to say (#381).
  *
- * Only the half-failure speaks: the registry entry is gone either way — that
- * ordering is main's recorded decision — but the folder can survive, a file
- * held open or the read-only attribute a real Git leaves on its object files.
- * The message names the path because that folder is what the contributor now
- * has to deal with by hand, and carries the error code because "could not be
- * deleted" without one is the kind of report a mentor cannot act on.
+ * Only a failure speaks. The registry entry now stays in place until the folder
+ * is gone, so the message says the deletion can be retried after the contributor
+ * releases whatever still holds the directory. It names the path and carries
+ * the error code because "could not be deleted" without either is the kind of
+ * report a mentor cannot act on.
  *
  * @param {{ ok?: boolean, reason?: string, path?: string, code?: string }} res The main process's result.
  */
 function deleteFailureMessage(res = {}) {
 	if (res.ok !== false || res.reason !== 'remove-failed') return null;
 	const code = res.code ? ` (${res.code})` : '';
-	return `The site was removed from the list, but its folder could not be deleted${code} and is still at ${res.path}`;
+	return `The site is still listed because its folder could not be deleted${code}. Close anything using it, then try again. Folder: ${res.path}`;
 }
 
 module.exports = { initialConfirmations, confirmationReducer, prConfirmationMessage, deleteFailureMessage, MAX_NOTICES };

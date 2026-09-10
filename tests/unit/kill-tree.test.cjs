@@ -1,7 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
-const { killTreePlan, killChildTree } = require('../../src/kill-tree.js');
+const { killTreePlan, killChildTree, killChildTreeAndWait } = require('../../src/kill-tree.js');
 
 test('killTreePlan on win32 builds a taskkill for the whole tree', () => {
 	const plan = killTreePlan('win32', 1234);
@@ -76,4 +77,71 @@ test('killChildTree never throws when every mechanism fails', () => {
 		kill: () => { throw new Error('boom'); }
 	});
 	assert.equal(attempted, true);
+});
+
+function waitingChild() {
+	return Object.assign(new EventEmitter(), {
+		pid: 42,
+		exitCode: null,
+		signalCode: null
+	});
+}
+
+test('killChildTreeAndWait resolves only after the child closes', async () => {
+	const child = waitingChild();
+	let settled = false;
+	const stopped = killChildTreeAndWait(child, {
+		platform: 'darwin',
+		kill: () => {},
+		timeoutMs: 1000
+	}).then((result) => {
+		settled = true;
+		return result;
+	});
+
+	await new Promise(setImmediate);
+	assert.equal(settled, false, 'sending the signal is not the same as closing');
+	child.emit('close', 0, 'SIGTERM');
+	assert.equal(await stopped, true);
+});
+
+test('killChildTreeAndWait listens before it sends the kill', async () => {
+	const child = waitingChild();
+	const stopped = await killChildTreeAndWait(child, {
+		platform: 'darwin',
+		kill: () => child.emit('close', 0, 'SIGTERM'),
+		timeoutMs: 1000
+	});
+
+	assert.equal(stopped, true, 'a synchronous close must not be missed');
+});
+
+test('killChildTreeAndWait reports a child that does not close', async () => {
+	const child = waitingChild();
+	const stopped = await killChildTreeAndWait(child, {
+		platform: 'darwin',
+		kill: () => {},
+		timeoutMs: 0
+	});
+
+	assert.equal(stopped, false);
+	assert.equal(child.listenerCount('close'), 0, 'a timed-out wait must remove its listener');
+});
+
+test('killChildTreeAndWait still waits for close after exit', async () => {
+	const child = Object.assign(waitingChild(), { exitCode: 0 });
+	let settled = false;
+	const stopped = killChildTreeAndWait(child, {
+		platform: 'darwin',
+		kill: () => { throw new Error('an exited child must not be signalled'); },
+		timeoutMs: 1000
+	}).then((result) => {
+		settled = true;
+		return result;
+	});
+
+	await new Promise(setImmediate);
+	assert.equal(settled, false, 'exit can happen before stdio closes');
+	child.emit('close', 0, null);
+	assert.equal(await stopped, true);
 });

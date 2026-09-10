@@ -451,6 +451,135 @@ test('sites:delete removes a registered directory and refuses an unregistered on
 	assert.deepEqual(Object.keys(settings.values.siteMeta), [unregistered]);
 });
 
+// A build watch and dev server keep their working directory open. On Windows
+// that makes the site's root undeletable until both process trees have fully
+// closed, so sending a kill and immediately calling removeTree is still a race.
+// The delete must wait for close, and the registry entry must remain retryable
+// throughout that wait.
+test('sites:delete stops and waits for the site processes before removing it (#414)', async () => {
+	const registered = '/sites/wp';
+	const settings = fakeSettingsStore({ sites: [registered], siteMeta: { [registered]: {} } });
+	const cp = stubbedSpawn();
+	const killChildTreeAndWait = spy((child) => new Promise((resolve) => child.once('close', () => resolve(true))));
+	const removeTree = spy(async () => {});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			...noSmtpServer(),
+			'child_process': { spawn: cp.spawn },
+			'./kill-tree': { killChildTreeAndWait },
+			'./remove-tree': { removeTree }
+		}
+	});
+
+	await main.invoke('npm:run-script', registered, 'dev');
+	await main.invoke('npm:run-script', registered, 'build');
+	const pendingServer = main.invoke('playground:start', registered);
+	await waitForSpawnCount(cp, 3);
+	const deletion = main.invoke('sites:delete', registered);
+	await new Promise(setImmediate);
+
+	const beforeClose = {
+		killCalls: killChildTreeAndWait.calls.slice(),
+		removeCalls: removeTree.calls.slice(),
+		sites: settings.values.sites.slice()
+	};
+	for (const child of cp.children) child.emit('close', 0, null);
+	const [result] = await Promise.all([deletion, pendingServer]);
+
+	assert.deepEqual(beforeClose.killCalls, cp.children.map((child) => [child]), 'every site process tree must be stopped');
+	assert.deepEqual(beforeClose.removeCalls, [], 'removal must wait until every child has closed');
+	assert.deepEqual(beforeClose.sites, [registered], 'the site must stay visible and retryable while deletion waits');
+	assert.deepEqual(removeTree.calls, [[registered]]);
+	assert.deepEqual(result, { ok: true });
+	assert.deepEqual(settings.values.sites, []);
+});
+
+test('sites:delete keeps the site when one of its processes does not stop (#414)', async () => {
+	const registered = '/sites/wp';
+	const settings = fakeSettingsStore({ sites: [registered], siteMeta: { [registered]: {} } });
+	const cp = stubbedSpawn();
+	const killChildTreeAndWait = spy(async () => false);
+	const removeTree = spy(async () => {});
+	const logError = spy();
+	const main = loadMain({
+		stubs: {
+			'./logging': { ...silentLogging()['./logging'], logError },
+			...settings.stubs,
+			'child_process': { spawn: cp.spawn },
+			'./kill-tree': { killChildTreeAndWait },
+			'./remove-tree': { removeTree }
+		}
+	});
+
+	await main.invoke('npm:run-script', registered, 'dev');
+	const result = await main.invoke('sites:delete', registered);
+	cp.children[0].emit('close', 1, null);
+
+	assert.deepEqual(killChildTreeAndWait.calls, [[cp.children[0]]]);
+	assert.deepEqual(removeTree.calls, [], 'a process that may still hold the folder must prevent removal');
+	assert.deepEqual(result, { ok: false, reason: 'remove-failed', path: registered, code: 'ETIMEDOUT' });
+	assert.deepEqual(settings.values.sites, [registered]);
+	assert.deepEqual(Object.keys(settings.values.siteMeta), [registered]);
+	assert.equal(logError.calls.length, 1);
+	assert.match(logError.calls[0][1], /kept .* in the registry/);
+});
+
+test('sites:delete does not let a stopped install retry while removing the site (#414)', async () => {
+	const registered = '/sites/wp';
+	const settings = fakeSettingsStore({ sites: [registered], siteMeta: { [registered]: {} } });
+	const cp = stubbedSpawn();
+	const shouldRetryWithRelaxedEngines = spy(({ cancelled }) => !cancelled);
+	const killChildTreeAndWait = spy(async (child) => {
+		child.emit('close', 1, null);
+		return true;
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'child_process': { spawn: cp.spawn },
+			'./kill-tree': { killChildTreeAndWait },
+			'./npm-runner': { shouldRetryWithRelaxedEngines },
+			'./remove-tree': { removeTree: async () => {} }
+		}
+	});
+
+	await main.invoke('npm:install', registered);
+	assert.equal(cp.spawned.length, 1);
+	assert.deepEqual(await main.invoke('sites:delete', registered), { ok: true });
+
+	assert.equal(shouldRetryWithRelaxedEngines.calls.length, 1);
+	assert.equal(shouldRetryWithRelaxedEngines.calls[0][0].cancelled, true);
+	assert.equal(cp.spawned.length, 1, 'deletion must not restart the install it stopped');
+});
+
+test('sites:delete ignores a runner that failed to spawn without closing (#414)', async () => {
+	const registered = '/sites/wp';
+	const settings = fakeSettingsStore({ sites: [registered], siteMeta: { [registered]: {} } });
+	const cp = stubbedSpawn();
+	const killChildTreeAndWait = spy(async () => false);
+	const removeTree = spy(async () => {});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'child_process': { spawn: cp.spawn },
+			'./kill-tree': { killChildTreeAndWait },
+			'./remove-tree': { removeTree }
+		}
+	});
+
+	await main.invoke('npm:install', registered);
+	cp.children[0].emit('error', Object.assign(new Error('spawn EPERM'), { code: 'EPERM' }));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	assert.deepEqual(await main.invoke('sites:delete', registered), { ok: true });
+	assert.deepEqual(killChildTreeAndWait.calls, [], 'a runner that never started cannot hold the folder open');
+	assert.deepEqual(removeTree.calls, [[registered]]);
+});
+
 // The tree a real Git leaves behind: a read-only loose object inside a
 // directory without its write bit. On POSIX plain removal fails on it — the
 // state that used to strand a site's folder on disk while the registry forgot
@@ -478,10 +607,10 @@ test('sites:delete clears the read-only attributes a real Git leaves behind (#38
 });
 
 // When the disk genuinely refuses, the handler must say so instead of
-// pretending: the registry half has already happened (deliberately — a locked
-// folder must not leave a site stuck undeletable), so the renderer gets a
-// machine-readable failure naming the surviving path, and the log gets the
-// stack. The refusal is staged by stubbing remove-tree rather than by locking
+// pretending: the registry entry must stay intact, so the contributor can retry
+// after releasing the folder. The renderer gets a machine-readable failure
+// naming the surviving path, and the log gets the stack. The refusal is staged
+// by stubbing remove-tree rather than by locking
 // a real directory: the real ways a removal fails differ by platform (an open
 // handle on Windows does not even refuse the unlink — libuv opens with
 // FILE_SHARE_DELETE), and the real propagation is remove-tree.test.cjs's job.
@@ -509,11 +638,10 @@ test('sites:delete reports a folder it could not remove instead of pretending (#
 	const result = await main.invoke('sites:delete', registered);
 	assert.deepEqual(result, { ok: false, reason: 'remove-failed', path: registered, code: 'EPERM' });
 	assert.equal(fs.existsSync(registered), true, 'the folder really did survive');
-	// The forget half happened first, on purpose; the contract is honesty, not rollback.
-	assert.deepEqual(settings.values.sites, []);
+	assert.deepEqual(settings.values.sites, [registered], 'the failed delete must remain retryable');
 	assert.equal(logError.calls.length, 1);
 	assert.equal(logError.calls[0][0], 'sites');
-	assert.match(logError.calls[0][1], /still on disk/);
+	assert.match(logError.calls[0][1], /kept .* in the registry/);
 });
 
 // --- site:status -> src/trunk-update.js ----------------------------------

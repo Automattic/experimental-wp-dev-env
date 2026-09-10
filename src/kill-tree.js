@@ -69,4 +69,48 @@ function killChildTree(child, {
 	return true;
 }
 
-module.exports = { killTreePlan, killChildTree };
+/**
+ * Stops a process tree and waits until the ChildProcess has fully closed.
+ * `close`, rather than the successful signal attempt, is the boundary callers
+ * need before removing a working directory the process may still hold open.
+ *
+ * Returns false when the child cannot be signalled or does not close within the
+ * timeout. The caller decides whether that means retry, refusal, or best effort.
+ *
+ * @param {?Object} child
+ * @param {Object}  [deps]           killChildTree options plus the wait limit.
+ * @param {number}  [deps.timeoutMs]
+ * @return {Promise<boolean>}
+ */
+function killChildTreeAndWait(child, { timeoutMs = 5000, ...killDeps } = {}) {
+	if (!child || typeof child.once !== 'function' || typeof child.removeListener !== 'function') {
+		return Promise.resolve(false);
+	}
+	const exited = (child.exitCode !== null && child.exitCode !== undefined) || child.signalCode;
+
+	return new Promise((resolve) => {
+		let timer = null;
+		let settled = false;
+		const finish = (stopped) => {
+			if (settled) return;
+			settled = true;
+			child.removeListener('close', onClose);
+			if (timer !== null) clearTimeout(timer);
+			resolve(stopped);
+		};
+		const onClose = () => finish(true);
+
+		// Listen first: taskkill is synchronous on Windows, and a very short-lived
+		// child can close before killChildTree returns.
+		child.once('close', onClose);
+		if (!exited && !killChildTree(child, killDeps)) {
+			finish(false);
+			return;
+		}
+		if (settled) return;
+		const waitMs = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 5000;
+		timer = setTimeout(() => finish(false), waitMs);
+	});
+}
+
+module.exports = { killTreePlan, killChildTree, killChildTreeAndWait };
