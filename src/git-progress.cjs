@@ -80,4 +80,4 @@ function failureReason(stderr, signal = null) {
 	return lines.filter((line) => /^(fatal|error):/.test(line)).pop() || lines.pop() || (signal ? `killed by ${signal}` : 'no output');
 }
 
-module.exports = { PROGRESS_LINE, parseProgressLines, createProgressReader, failureReason };
+module.exports = { parseProgressLines, createProgressReader, failureReason };
