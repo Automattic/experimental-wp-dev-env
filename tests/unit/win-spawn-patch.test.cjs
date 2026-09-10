@@ -9,16 +9,20 @@ const WIN = {
 	execPath: 'C:\\App\\App.exe',
 	npmCliPath: 'C:\\App\\resources\\app.asar\\node_modules\\npm\\bin\\npm-cli.js',
 	npxCliPath: 'C:\\App\\resources\\app.asar\\node_modules\\npm\\bin\\npx-cli.js',
-	env: { Path: 'C:\\shims;C:\\Windows', PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+	env: { Path: 'C:\\shims;C:\\Windows', PATHEXT: '.COM;.EXE;.BAT;.CMD', SystemRoot: 'C:\\Windows' },
 	lookup: (file) => {
 		const known = {
 			node: 'C:\\shims\\node.cmd',
 			grunt: 'C:\\site\\node_modules\\.bin\\grunt.cmd',
-			mysqld: 'C:\\tools\\mysqld.exe'
+			mysqld: 'C:\\tools\\mysqld.exe',
+			// Windows's own bsdtar, present since Windows 10 1803.
+			'c:\\windows\\system32\\tar.exe': 'C:\\Windows\\System32\\tar.exe'
 		};
 		return known[String(file).toLowerCase()] || null;
 	}
 };
+
+const SYSTEM_TAR = 'C:\\Windows\\System32\\tar.exe';
 
 // The exact call wordpress-develop's Gruntfile makes in gutenberg:verify.
 test('a bare `node` spawn is redirected to Electron in Node mode, without a shell', () => {
@@ -93,6 +97,75 @@ test('commands that Windows can exec directly are left alone', () => {
 	assert.equal(resolveSpawnTarget({ ...WIN, file: 'C:\\tools\\thing.exe', args: [] }), null);
 	// Unresolvable name: leave it be so the caller sees the real ENOENT.
 	assert.equal(resolveSpawnTarget({ ...WIN, file: 'nonesuch', args: [] }), null);
+});
+
+// The exact call wordpress-develop's tools/gutenberg/download.js makes (#373).
+// With Git for Windows on PATH a bare `tar` is GNU tar, which reads `C:` as a
+// remote host; Windows's own bsdtar in System32 handles the drive letter.
+test('a bare `tar` spawn is redirected to System32 bsdtar, args and options intact', () => {
+	const options = { stdio: ['ignore', 'inherit', 'inherit'] };
+	const target = resolveSpawnTarget({
+		...WIN,
+		file: 'tar',
+		args: ['-xzf', 'C:\\site\\.gutenberg\\artifact.tgz', '-C', 'C:\\site\\.gutenberg\\src'],
+		options
+	});
+
+	assert.equal(target.file, SYSTEM_TAR);
+	assert.deepEqual(target.args, ['-xzf', 'C:\\site\\.gutenberg\\artifact.tgz', '-C', 'C:\\site\\.gutenberg\\src']);
+	assert.deepEqual(target.options, options);
+	// Not Electron: no shell, and no Node-mode env rewrite either.
+	assert.ok(!target.options.shell);
+	assert.equal(target.options.env, undefined);
+});
+
+test('tar.exe and TAR resolve to the same redirect as bare tar', () => {
+	for (const file of ['tar.exe', 'TAR']) {
+		const target = resolveSpawnTarget({ ...WIN, file, args: ['-xzf', 'a.tgz'] });
+		assert.equal(target.file, SYSTEM_TAR, file);
+		assert.deepEqual(target.args, ['-xzf', 'a.tgz'], file);
+	}
+});
+
+test('SystemRoot is honoured, and C:\\Windows is the fallback when it is unset', () => {
+	const relocated = resolveSpawnTarget({
+		...WIN,
+		env: { ...WIN.env, SystemRoot: 'D:\\Win' },
+		lookup: (file) => (String(file).toLowerCase() === 'd:\\win\\system32\\tar.exe' ? 'D:\\Win\\System32\\tar.exe' : null),
+		file: 'tar',
+		args: []
+	});
+	assert.equal(relocated.file, 'D:\\Win\\System32\\tar.exe');
+
+	const { SystemRoot, ...withoutRoot } = WIN.env;
+	const fallback = resolveSpawnTarget({ ...WIN, env: withoutRoot, file: 'tar', args: [] });
+	assert.equal(fallback.file, SYSTEM_TAR);
+});
+
+test('a bare `tar` is left alone when System32 has no tar.exe', () => {
+	const target = resolveSpawnTarget({
+		...WIN,
+		lookup: () => null,
+		file: 'tar',
+		args: ['-xzf', 'a.tgz']
+	});
+	// Whatever tar PATH finds still runs: today's failure, but not a new one.
+	assert.equal(target, null);
+});
+
+test('an explicit path to some other tar is not rewritten', () => {
+	const gitTar = 'C:\\Program Files\\Git\\usr\\bin\\tar.exe';
+	assert.equal(resolveSpawnTarget({ ...WIN, file: gitTar, args: ['-xzf', 'a.tgz'] }), null);
+});
+
+test('a `tar` call that asked for a shell, or runs off Windows, is left alone', () => {
+	assert.equal(
+		resolveSpawnTarget({ ...WIN, file: 'tar', args: ['-xzf', 'a.tgz'], options: { shell: true } }),
+		null
+	);
+	for (const platform of ['darwin', 'linux']) {
+		assert.equal(resolveSpawnTarget({ ...WIN, platform, file: 'tar', args: ['-xzf', 'a.tgz'] }), null, platform);
+	}
 });
 
 test('a call that already asked for a shell is left alone', () => {
