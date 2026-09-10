@@ -4959,7 +4959,7 @@ test('branches:rebase refuses a checkout mid-merge (#352)', async () => {
 	assert.deepEqual(rebaseOntoTrunk.calls, []);
 });
 
-test('site:status reports the merge in progress, and a detector that fails reports none and blocks nothing (#352)', async () => {
+test('site:status reports the merge in progress; a detector that fails reports none there but refuses the writes (#352)', async () => {
 	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': {} } });
 	const readTrunkInfo = async () => ({ trunkOid: 'x', trunkDate: 'd' });
 	const reporting = loadMain({
@@ -4980,8 +4980,15 @@ test('site:status reports the merge in progress, and a detector that fails repor
 	const status = await failing.invoke('site:status', '/sites/wp');
 	assert.equal(status.mergeInProgress, null);
 	assert.equal(status.trunkOid, 'x', 'the rest of the status is still answered');
-	assert.equal((await failing.invoke('git:discard-changes', '/sites/wp')).ok, true, 'the flow reports its own reason, the detector does not');
-	assert.equal(discardChanges.calls.length, 1);
+	// Unlike a missing origin, a merge the read could not see would be erased
+	// by the checkout that follows, so the write refuses rather than guesses.
+	const refused = await failing.invoke('git:discard-changes', '/sites/wp');
+	assert.equal(refused.ok, false);
+	assert.equal(refused.code, 'merge-check-failed');
+	assert.match(refused.error, /could not check whether a merge is in progress/);
+	assert.match(refused.error, /nothing was changed/);
+	assert.match(refused.error, /git died/, 'the reason rides along');
+	assert.deepEqual(discardChanges.calls, []);
 });
 
 test('a discard on a real checkout mid-merge leaves MERGE_HEAD, the unmerged entries and the markers in place (#352)', async (t) => {

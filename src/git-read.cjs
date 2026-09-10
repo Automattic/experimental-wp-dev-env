@@ -377,13 +377,17 @@ async function isLegacySite(dir, { run = runGit } = {}) {
 
 /**
  * What Git records under `.git` while an operation waits for a human, and
- * the kind each file stands for: the list `git status` itself reads. The
- * rebase directories are there as well as `REBASE_HEAD` because a rebase
- * stopped at an `edit` has the directory and no conflict to name.
+ * the kind each file stands for: the head files and the two rebase
+ * directories, the list `git status` itself reads. `REBASE_HEAD` is
+ * deliberately not on it: the bundled Git leaves it behind after a rebase
+ * that finished (only `--abort` removes it), so reading it would refuse
+ * every write on that site for good. The directories cover a rebase
+ * stopped on a conflict and one stopped at an `edit` alike. Not read
+ * either: `sequencer` (a multi-commit cherry-pick or revert between steps)
+ * and `BISECT_LOG`.
  */
 const IN_PROGRESS_MARKERS = [
 	['merge', 'MERGE_HEAD'],
-	['rebase', 'REBASE_HEAD'],
 	['rebase', 'rebase-merge'],
 	['rebase', 'rebase-apply'],
 	['cherry-pick', 'CHERRY_PICK_HEAD'],
@@ -410,9 +414,16 @@ const IN_PROGRESS_MARKERS = [
  * @param {string}   [options.platform]
  * @param {Function} [options.run]
  * @return {Promise<?{kind: string, paths: string[]}>} `kind` is `merge`,
- *   `rebase`, `cherry-pick`, `revert` or `apply`; null when nothing is open.
+ *   `rebase`, `cherry-pick`, `revert` or `apply`; null when nothing is open
+ *   or `dir` is not a repository. Rejects when the status cannot be read.
  */
 async function mergeInProgress(dir, { platform = process.platform, run = runGit } = {}) {
+	// Not a repository: nothing can be open in it, and the flow that follows
+	// reports that on its own. Answered without a spawn, as `isLegacySite`
+	// answers its common case; a repository whose status cannot be read is
+	// a different thing and rejects below, because a write that guessed
+	// "nothing open" would erase what the read could not see.
+	if (!fs.existsSync(path.join(dir, '.git'))) return null;
 	const win = await windowsArgs(dir, { platform, run });
 	const { stdout } = await run([...win, 'status', '--porcelain=v2', '-z', '--untracked-files=no', '--no-renames'], { cwd: dir });
 	const paths = parseUnmergedZ(stdout);

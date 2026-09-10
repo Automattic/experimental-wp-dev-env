@@ -77,4 +77,19 @@ function mergeInProgressError(mergeInProgress) {
 	return `${notice.title} ${notice.body}`;
 }
 
-module.exports = { mergeInProgressNotice, mergeInProgressError };
+/**
+ * The refusal when the read itself failed: the app does not know whether an
+ * operation is open, and a write that guessed "no" would erase one. Nothing
+ * was changed, so trying again is the whole advice.
+ *
+ * @param {*} reason The error the read threw.
+ * @return {string}
+ */
+function mergeCheckFailedError(reason) {
+	const why = reason && reason.message ? String(reason.message).trim() : String(reason || '').trim();
+	return 'The app could not check whether a merge is in progress in this checkout, so nothing was changed. '
+		+ 'If a Git command is running in it from a terminal, let it finish, then try again.'
+		+ (why ? ` (${why})` : '');
+}
+
+module.exports = { mergeInProgressNotice, mergeInProgressError, mergeCheckFailedError };

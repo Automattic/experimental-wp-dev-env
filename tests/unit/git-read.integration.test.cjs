@@ -346,6 +346,18 @@ test('mergeInProgress: a merge left conflicted by a terminal is reported with it
 	assert.equal(inGitDir(dir, 'MERGE_HEAD'), false);
 });
 
+test('mergeInProgress: a directory that is not a repository is not a merge, and a status that cannot be read rejects (#352)', async (t) => {
+	const plain = tempDir(t, 'toolkit-git-read-plain-');
+	assert.equal(await read.mergeInProgress(plain, { platform: 'darwin' }), null);
+	assert.equal(await read.mergeInProgress(path.join(plain, 'missing'), { platform: 'darwin' }), null);
+
+	const dir = makeRepo(t);
+	// An index Git cannot open: what a status read fails on, rather than a
+	// lock, which the bundled Git would wait out or refuse the same way.
+	fs.writeFileSync(path.join(dir, '.git', 'index'), 'not an index\n');
+	await assert.rejects(read.mergeInProgress(dir, { platform: 'darwin' }), (error) => error.code === 128);
+});
+
 test('mergeInProgress: `git merge --abort` ends it, and a clean tree with a loose edit is not one (#352)', async (t) => {
 	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
 	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1);
@@ -384,6 +396,34 @@ test('mergeInProgress: a rebase, a cherry-pick and a three-way apply are each th
 	assert.deepEqual(await read.mergeInProgress(applying, { platform: 'darwin' }), { kind: 'apply', paths: ['src/wp-login.php'] });
 	assert.equal(git(['restore', '--staged', '--worktree', '--', 'src/wp-login.php'], applying).status, 0, 'the way out the sentence names');
 	assert.equal(await read.mergeInProgress(applying, { platform: 'darwin' }), null);
+});
+
+test('mergeInProgress: finishing a rebase or a cherry-pick from a terminal ends it, on the Git the app ships (#352)', async (t) => {
+	const clash = { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } };
+	const resolve = (dir) => {
+		fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // both\n');
+		assert.equal(git(['add', 'src/wp-login.php'], dir).status, 0);
+	};
+
+	const rebasing = forkedRepo(t, clash);
+	assert.equal(git(['checkout', '-q', 'mentor/fix'], rebasing).status, 0);
+	assert.equal(git(['rebase', 'trunk'], rebasing).status, 1);
+	resolve(rebasing);
+	// `--continue` reopens the commit message in an editor; `true` stands in for one.
+	const continued = git([...ID, '-c', 'core.editor=true', 'rebase', '--continue'], rebasing);
+	assert.equal(continued.status, 0, continued.stderr);
+	assert.equal(await read.mergeInProgress(rebasing, { platform: 'darwin' }), null, 'the rebase directory is gone once the rebase ends');
+	assert.equal(inGitDir(rebasing, 'rebase-merge'), false);
+	// CHARACTERISATION of the Git the app ships: a finished rebase leaves
+	// REBASE_HEAD behind, which is why it is not a marker the read consults.
+	assert.equal(inGitDir(rebasing, 'REBASE_HEAD'), true);
+
+	const picking = forkedRepo(t, clash);
+	assert.equal(git(['cherry-pick', 'mentor/fix'], picking).status, 1);
+	resolve(picking);
+	assert.equal(git([...ID, '-c', 'core.editor=true', 'cherry-pick', '--continue'], picking).status, 0);
+	assert.equal(await read.mergeInProgress(picking, { platform: 'darwin' }), null);
+	assert.equal(inGitDir(picking, 'CHERRY_PICK_HEAD'), false);
 });
 
 test('CHARACTERISATION: the forced checkout every app write runs erases a merge in progress without a word, which is why the block exists (#352)', async (t) => {

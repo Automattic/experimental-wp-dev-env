@@ -19,7 +19,7 @@ const fs = require( 'node:fs' );
 const path = require( 'node:path' );
 const { test, expect } = require( '../helpers/app.cjs' );
 const { makeSite, read, exists, branches, currentBranch, LOGIN, SUBSTRATE, SUBSTRATE_CONTENT } = require( '../helpers/git-site.cjs' );
-const { gitOk, commitFiles } = require( '../../unit/helpers/git.cjs' );
+const { git, gitOk, commitFiles } = require( '../../unit/helpers/git.cjs' );
 
 const TICKET = '60001';
 const BANNER = 'A merge started outside the app is in progress.';
@@ -38,7 +38,7 @@ function leaveMergeHalfDone( dir ) {
 	gitOk( [ 'checkout', '-q', 'trunk' ], dir );
 	fs.writeFileSync( path.join( dir, LOGIN ), '<?php // trunk moved too\n' );
 	commitFiles( dir, [ LOGIN ], 'trunk moves' );
-	const merge = require( '../../unit/helpers/git.cjs' ).git( [ 'merge', 'mentor/fix' ], dir );
+	const merge = git( [ 'merge', 'mentor/fix' ], dir );
 	expect( merge.status ).toBe( 1 );
 	expect( mergeHead( dir ) ).toBe( true );
 }
@@ -63,7 +63,9 @@ test( 'a merge left half done by a terminal is named on the card, refuses the ti
 	// still there, the markers still in the file.
 	await page.getByLabel( 'Trac ticket number or URL' ).first().fill( TICKET );
 	await page.getByRole( 'button', { name: 'Link ticket', exact: true } ).first().click();
-	await expect( page.getByRole( 'alert' ).filter( { hasText: 'is in progress' } ).nth( 1 ) ).toBeVisible( { timeout: 30_000 } );
+	// The refusal under the field is a second alert with the same sentence,
+	// beside the banner: two on screen, where one is the banner alone.
+	await expect( page.getByRole( 'alert' ).filter( { hasText: 'Finish it from a terminal' } ) ).toHaveCount( 2, { timeout: 30_000 } );
 	expect( branches( site.dir ) ).not.toContain( `ticket/${ TICKET }` );
 	expect( mergeHead( site.dir ) ).toBe( true );
 	expect( read( site.dir, LOGIN ) ).toBe( markersBefore );

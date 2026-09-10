@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { mergeInProgressNotice, mergeInProgressError } = require('../../src/renderer/merge-in-progress.cjs');
+const { mergeInProgressNotice, mergeInProgressError, mergeCheckFailedError } = require('../../src/renderer/merge-in-progress.cjs');
 
 test('mergeInProgressNotice names the operation, the files and both ways out (#352)', () => {
 	const notice = mergeInProgressNotice({ mergeInProgress: { kind: 'merge', paths: ['src/wp-login.php', 'src/doomed.php'] } });
@@ -69,4 +69,12 @@ test('main and the card read the same module (#352)', () => {
 	assert.match(source, /mergeInProgressNotice\(\{ mergeInProgress \}\)/);
 	assert.match(source, /mergeNotice\.title/);
 	assert.match(source, /mergeNotice\.body/);
+});
+
+test('a read that failed refuses the write and says nothing changed (#352)', () => {
+	const error = mergeCheckFailedError(new Error('index.lock exists'));
+	assert.match(error, /could not check whether a merge is in progress/);
+	assert.match(error, /nothing was changed/);
+	assert.match(error, /\(index\.lock exists\)$/);
+	assert.doesNotMatch(mergeCheckFailedError(null), /\(/);
 });

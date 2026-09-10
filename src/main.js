@@ -70,7 +70,7 @@ const SWITCH_PROGRESS_CHANNEL = 'switch:progress';
 const CARRIED_WORK_CHANNEL = 'ticket:carried-work';
 const { parseTicketRef } = require('./renderer/trac-ticket.cjs');
 const { LEGACY_SITE_ERROR } = require('./renderer/legacy-site.cjs');
-const { mergeInProgressError } = require('./renderer/merge-in-progress.cjs');
+const { mergeInProgressError, mergeCheckFailedError } = require('./renderer/merge-in-progress.cjs');
 const { parseHandle } = require('./wporg-handle.cjs');
 const { parseEventName, buildProvenanceHeader, handoffFilename } = require('./patch-provenance.cjs');
 const { describeRefused } = require('./safe-log');
@@ -1181,16 +1181,24 @@ async function legacySiteBlock(sitePath) {
  * tree as the ticket's work. So the writes that touch the checkout refuse
  * until a terminal finishes or abandons it: the same shape as
  * `legacySiteBlock`, the sentence naming the files and both ways out. Read
- * from the repository on every call, never remembered; a read that fails is
- * not an answer, the flow reports its own reason (as `noOriginBlock`).
- * Reads, the patch export, opening a pull request, deleting the site and
- * deleting a ticket that is not checked out stay open.
+ * from the repository on every call, never remembered. A read that fails
+ * refuses too, unlike `noOriginBlock`: there the fetch that follows fails
+ * on its own, here the checkout that follows would succeed and erase what
+ * the read could not see (a mentor's Git holding `index.lock` is the
+ * likely reason it could not). Reads, the patch export, opening a pull
+ * request, deleting the site and deleting a ticket that is not checked out
+ * stay open.
  *
  * @param {string} sitePath
  */
 async function mergeInProgressBlock(sitePath) {
     let state = null;
-    try { state = await mergeInProgress(sitePath); } catch { return null; }
+    try {
+        state = await mergeInProgress(sitePath);
+    } catch (e) {
+        logError('git', `could not read the merge state of ${describeRefused(sitePath)}: ${String(e && e.stack ? e.stack : e)}`);
+        return { ok: false, code: 'merge-check-failed', error: mergeCheckFailedError(e) };
+    }
     if (!state) return null;
     return { ok: false, code: 'merge-in-progress', kind: state.kind, paths: state.paths, error: mergeInProgressError(state) };
 }
@@ -1517,7 +1525,9 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
         try {
             // The update rewrites `trunk` and checks it out, so it has to run
             // from trunk (#108). Park the ticket first, and return to it after.
-            const blocked = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath) || await midSwitchBlock(sitePath) || await noOriginBlock(sitePath);
+            // The merge gate walks the worktree, the other two read a config value
+            // and the store; cheap first, and the walk still precedes the park.
+            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath) || await noOriginBlock(sitePath) || await mergeInProgressBlock(sitePath);
             if (blocked) { sendLog(`\n${blocked.error}\n`); sendDone(blocked); return; }
 
             const active = await activeBranch(sitePath, { migrate: true });
