@@ -51,10 +51,6 @@ function normalizeExternalUrl(url) {
 	return parsed.href;
 }
 
-function isAllowedExternalUrl(url) {
-	return normalizeExternalUrl(url) !== null;
-}
-
 // A refused address is attacker-influenced by hypothesis, and it is about to be
 // written into the file contributors attach to bug reports, so it has to stay on
 // one line and it has to be bounded. safe-log.js is where both live, and why.
@@ -80,7 +76,6 @@ async function openExternalUrl(url, { openExternal, onRefused } = {}) {
 module.exports = {
 	ALLOWED_URL_SCHEMES,
 	normalizeExternalUrl,
-	isAllowedExternalUrl,
 	describeRefusedUrl,
 	openExternalUrl
 };
