@@ -76,6 +76,8 @@ If you edit lines the patch brought in, it can no longer be lifted back out with
 
 For very large patches, the app does not keep the copy it would need for an undo, so they never offer Revert. The amber box says so and offers the same copy-and-discard route. Until the ticket is reverted or discarded, the patch still occupies its one applied-patch slot.
 
+Applying and reverting are also refused while a merge started outside the app is waiting in the checkout, since either would write over its half-resolved files. The site card says so and names the way out; see [If a merge is in progress](ticket-branches#if-a-merge-is-in-progress).
+
 **Update to latest trunk** is not an escape hatch for a patch on a ticket. It parks the ticket branch, updates trunk, and checks the same branch back out afterwards — applied patch and all — so it leaves you where you were. See [Staying up to date with trunk](trunk-updates).
 
 ## Your own changes

@@ -46,6 +46,14 @@ If the file swap itself fails part-way — an editor or an antivirus holding a f
 
 Do not force-quit during a switch. A killed process writes no such marker, so the half-swapped tree is left behind with nothing saying so.
 
+## If a merge is in progress
+
+The app never starts a merge, but the checkout is an ordinary Git repository, and someone with Git can: a mentor merging a branch into your work from a terminal, a `git rebase`, a `git cherry-pick`, or a `git apply --3way` that stopped on conflicts. Git then leaves conflict markers in the files and records the unfinished operation in the repository, waiting for a person to resolve it.
+
+While that is the case, the site card shows a red banner: *A merge started outside the app is in progress*, naming the files still in conflict. Every action that would rewrite the working tree is refused with the same sentence, because each of them would erase the half-resolved merge without a word: linking or unlinking a ticket, **Continue working on**, **Update this ticket to the current trunk**, applying or reverting a patch, discarding changes, updating trunk, and deleting the ticket that is checked out. Reading still works: the patch export shows what is there, and deleting the site or another ticket's work is not behind the banner.
+
+The app offers no button for it, because the way out is the terminal the merge came from, and the banner names the commands: resolve the files in your editor, then `git add` them and `git commit` (or `git rebase --continue`, `git cherry-pick --continue`, for the operation in hand); or abandon it with `git merge --abort` (`git rebase --abort`, `git cherry-pick --abort`). A merge whose files are all resolved but not yet committed is still in progress, and the banner says so. The state is read from the repository each time, so it survives closing the app and disappears on its own once the operation is finished or abandoned.
+
 ## Deleting a ticket's work
 
 **Delete this ticket's work**, on each row, throws that ticket's branch away — every change you made for it, whether or not you ever submitted it. It asks first: *Delete all work on #61002 on this site? This cannot be undone.* There is no undo afterwards.
