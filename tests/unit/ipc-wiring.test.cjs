@@ -4826,3 +4826,194 @@ test('git:preview-patch: a layer file may also contain contributor edits (#306)'
 	assert.deepEqual(attributed.fromLayer, ['src/wp-login.php']);
 	assert.ok(attributed.sentences.some((sentence) => /may also contain your own edits/.test(sentence)));
 });
+
+// --- a merge in progress -> src/git-read.cjs mergeInProgress (#352) ---------
+//
+// A merge, rebase, cherry-pick or three-way apply started outside the app
+// leaves the index unmerged, and every forced checkout the app's writes run
+// would erase it without a word. Every handler that would write the checkout
+// refuses with the same shape legacySiteBlock uses, before it reaches the
+// module that would do the writing. Reads, the patch export, opening a pull
+// request and deleting a site or another ticket's branch are not behind it.
+
+const MERGE_STATE = { kind: 'merge', paths: ['src/wp-login.php', 'src/doomed.php'] };
+
+function mergeStubs(settings, extra = {}) {
+	return {
+		...silentLogging(),
+		...settings.stubs,
+		'./git-read.cjs': { mergeInProgress: async () => MERGE_STATE },
+		...extra
+	};
+}
+
+const refusesMerge = (result, label) => {
+	assert.equal(result.ok, false, label);
+	assert.equal(result.code, 'merge-in-progress', label);
+	assert.deepEqual(result.paths, MERGE_STATE.paths, label);
+	assert.match(result.error, /merge started outside the app is in progress/, label);
+	assert.match(result.error, /src\/wp-login\.php and src\/doomed\.php/, `${label}: the files are named`);
+	assert.match(result.error, /git merge --abort/, `${label}: the way out is named`);
+};
+
+test('the branch handlers refuse a checkout mid-merge before touching ticket-branches (#352)', async () => {
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const resumeSwitch = spy(async () => ({ switched: true }));
+	const deleteTicketBranch = spy(async () => ({ deleted: true }));
+	const startTicketBranch = spy(async () => ({ started: true }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { baseOid: 'abc' }, 'ticket/59234': { baseOid: 'def' } }, currentBranch: 'ticket/61002', tracTicket: 61002 } }
+	});
+	const main = loadMain({
+		stubs: mergeStubs(settings, { './ticket-branches': { switchToBranch, resumeSwitch, deleteTicketBranch, startTicketBranch, currentBranchName: async () => 'ticket/61002' } })
+	});
+
+	for (const [channel, ...args] of [
+		['branches:switch', '/sites/wp', 'trunk'],
+		['branches:delete', '/sites/wp', 'ticket/61002'],
+		['sites:set-ticket', '/sites/wp', '59234'],
+		['sites:set-ticket', '/sites/wp', '']
+	]) {
+		refusesMerge(await main.invoke(channel, ...args), channel);
+	}
+	assert.deepEqual(switchToBranch.calls, []);
+	assert.deepEqual(resumeSwitch.calls, []);
+	assert.deepEqual(deleteTicketBranch.calls, []);
+	assert.deepEqual(startTicketBranch.calls, []);
+	assert.equal(settings.values.siteMeta['/sites/wp'].tracTicket, 61002, 'the unlink path did not move the metadata');
+
+	// Deleting a ticket that is not checked out touches no file, so it goes through.
+	const other = await main.invoke('branches:delete', '/sites/wp', 'ticket/59234');
+	assert.equal(other.ok, true);
+	assert.deepEqual(deleteTicketBranch.calls.map(([, ref]) => ref), ['ticket/59234']);
+});
+
+test('the mid-merge refusal comes before the mid-switch retry, which is a forced checkout (#352)', async () => {
+	const resumeSwitch = spy(async () => ({ switched: true }));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { baseOid: 'abc' } }, currentBranch: 'trunk', switchInProgress: { from: 'trunk', to: 'ticket/61002' } } }
+	});
+	const main = loadMain({ stubs: mergeStubs(settings, { './ticket-branches': { resumeSwitch, currentBranchName: async () => 'trunk' } }) });
+
+	refusesMerge(await main.invoke('sites:set-ticket', '/sites/wp', '61002'), 'the retry');
+	refusesMerge(await main.invoke('branches:switch', '/sites/wp', 'ticket/61002'), 'the retry through switch');
+	assert.deepEqual(resumeSwitch.calls, []);
+});
+
+test('discarding refuses a checkout mid-merge before touching trunk-update (#352)', async () => {
+	const discardChanges = spy(async () => {});
+	const discardToBase = spy(async () => {});
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: { 'ticket/61002': { baseOid: 'abc', appliedPatch: { label: 'p', text: 'X' } } }, currentBranch: 'ticket/61002', tracTicket: 61002 } }
+	});
+	const main = loadMain({ stubs: mergeStubs(settings, { './trunk-update': { discardChanges, discardToBase } }) });
+
+	for (const channel of ['git:discard-changes', 'git:discard-to-base']) {
+		refusesMerge(await main.invoke(channel, '/sites/wp'), channel);
+	}
+	assert.deepEqual(discardChanges.calls, []);
+	assert.deepEqual(discardToBase.calls, []);
+	assert.equal(settings.values.siteMeta['/sites/wp'].branches['ticket/61002'].appliedPatch.text, 'X', 'nothing was discarded');
+});
+
+test('the trunk update refuses a checkout mid-merge on its done channel, before parking (#352)', async () => {
+	const updateToLatestTrunk = spy(async () => ({}));
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': { tracTicket: 61002, currentBranch: 'ticket/61002', branches: { 'ticket/61002': { baseOid: 'abc' } } } } });
+	const main = loadMain({
+		stubs: mergeStubs(settings, { './trunk-update': { updateToLatestTrunk }, './ticket-branches': { switchToBranch, currentBranchName: async () => 'ticket/61002' } })
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	const done = await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	refusesMerge(done, 'update');
+	assert.deepEqual(updateToLatestTrunk.calls, []);
+	assert.deepEqual(switchToBranch.calls, [], 'the ticket was not parked: parking commits the half-merged tree');
+	assert.ok(event.sent.some((m) => m.channel === 'git:update-trunk:log' && /merge started outside the app/.test(m.payload.data)), 'the sentence reaches the terminal');
+});
+
+test('applying and reverting a patch refuse a checkout mid-merge before patch-apply (#352)', async () => {
+	const applyPatchToDir = spy(async () => ({ ok: true, applied: [], skipped: [] }));
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': { appliedPatch: { label: 'first', text: 'X' } } } });
+	const main = loadMain({ stubs: mergeStubs(settings, { './patch-apply': { applyPatchToDir } }) });
+
+	for (const options of [{ patchText: 'P' }, { reverse: true }]) {
+		const event = createIpcEvent();
+		const { applyId } = await main.invokeWith('git:apply-patch', event, '/sites/wp', options);
+		refusesMerge(await applyDone(event, applyId), JSON.stringify(options));
+	}
+	assert.deepEqual(applyPatchToDir.calls, []);
+	assert.equal(settings.values.siteMeta['/sites/wp'].appliedPatch.text, 'X', 'the record was not touched');
+});
+
+test('branches:rebase refuses a checkout mid-merge (#352)', async () => {
+	const rebaseOntoTrunk = spy(async () => ({ rebased: true, from: 'old', to: 'new', parked: false }));
+	const settings = rebaseFixture();
+	const main = loadMain({ stubs: mergeStubs(settings, { './ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => 'ticket/61002' } }) });
+	refusesMerge(await main.invoke('branches:rebase', '/sites/wp'), 'rebase');
+	assert.deepEqual(rebaseOntoTrunk.calls, []);
+});
+
+test('site:status reports the merge in progress; a detector that fails reports none there but refuses the writes (#352)', async () => {
+	const settings = fakeSettingsStore({ sites: ['/sites/wp'], siteMeta: { '/sites/wp': {} } });
+	const readTrunkInfo = async () => ({ trunkOid: 'x', trunkDate: 'd' });
+	const reporting = loadMain({
+		stubs: mergeStubs(settings, { './trunk-update': { readTrunkInfo }, './ticket-branches': { currentBranchName: async () => 'trunk' } })
+	});
+	assert.deepEqual((await reporting.invoke('site:status', '/sites/wp')).mergeInProgress, MERGE_STATE);
+
+	const discardChanges = spy(async () => {});
+	const failing = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./git-read.cjs': { mergeInProgress: async () => { throw new Error('git died'); } },
+			'./trunk-update': { readTrunkInfo, discardChanges },
+			'./ticket-branches': { currentBranchName: async () => 'trunk' }
+		}
+	});
+	const status = await failing.invoke('site:status', '/sites/wp');
+	assert.equal(status.mergeInProgress, null);
+	assert.equal(status.trunkOid, 'x', 'the rest of the status is still answered');
+	// Unlike a missing origin, a merge the read could not see would be erased
+	// by the checkout that follows, so the write refuses rather than guesses.
+	const refused = await failing.invoke('git:discard-changes', '/sites/wp');
+	assert.equal(refused.ok, false);
+	assert.equal(refused.code, 'merge-check-failed');
+	assert.match(refused.error, /could not check whether a merge is in progress/);
+	assert.match(refused.error, /nothing was changed/);
+	assert.match(refused.error, /git died/, 'the reason rides along');
+	assert.deepEqual(discardChanges.calls, []);
+});
+
+test('a discard on a real checkout mid-merge leaves MERGE_HEAD, the unmerged entries and the markers in place (#352)', async (t) => {
+	const { dir, baseOid, workFile } = await parkedTicketRepo(t);
+	// What a mentor's terminal leaves: a branch that disagrees on the ticket's
+	// file, merged into it and stopped on the conflict.
+	gitOk(['checkout', '-q', '-b', 'mentor/fix', baseOid], dir);
+	fs.writeFileSync(path.join(dir, workFile), '<?php // login\n// the mentor\'s fix\n');
+	commitFiles(dir, [workFile], 'mentor');
+	gitOk(['checkout', '-q', 'ticket/62281'], dir);
+	// The identity `git merge` insists on before it starts, conflict or not.
+	const mentor = ['-c', 'user.name=mentor', '-c', 'user.email=mentor@example.com'];
+	assert.equal(bin([...mentor, 'merge', 'mentor/fix'], dir).status, 1, 'the merge stops on the conflict');
+	const before = statusScan(dir);
+	assert.match(before, /^u UU /m);
+	const main = parkedTicketMain(dir, baseOid);
+
+	const res = await main.invoke('git:discard-changes', dir);
+
+	assert.equal(res.ok, false);
+	assert.equal(res.code, 'merge-in-progress');
+	assert.deepEqual(res.paths, [workFile], 'the real path, from the real index');
+	assert.match(res.error, /merge started outside the app is in progress/);
+	assert.match(res.error, /conflicts in wp-login\.php/);
+	assert.equal(fs.existsSync(path.join(dir, '.git', 'MERGE_HEAD')), true, 'the merge is still open');
+	assert.equal(statusScan(dir), before, 'index and worktree untouched');
+	assert.match(fs.readFileSync(path.join(dir, workFile), 'utf8'), /^<<<<<<< /m, 'the markers, the interface for resolving it, are still there');
+});

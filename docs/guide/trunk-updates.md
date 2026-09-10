@@ -22,7 +22,7 @@ What it will not run alongside is another install or build. The **Update to late
 
 The update always shows the same three steps in a progress card, with a "step N of 3" counter:
 
-1. **Fetch and reset to trunk** — pull the newest commits and reset the checkout to them. If you have uncommitted changes the app stops and asks first, offering **Save them as a patch first (as a local file)** or **Discard them** — the second loses the work and cannot be undone. When you choose to save, the summary afterwards tells you where the patch went.
+1. **Fetch and reset to trunk** — pull the newest commits and reset the checkout to them. If you have uncommitted changes the app stops and asks first, offering **Save them as a patch first (as a local file)** or **Discard them** — the second loses the work and cannot be undone. When you choose to save, the summary afterwards tells you where the patch went. If a merge started outside the app is waiting in the checkout, the update is refused before anything moves, because the reset would erase it; finish or abandon that merge from a terminal first, as described in [If a merge is in progress](ticket-branches#if-a-merge-is-in-progress).
 2. **Install dependencies** — runs only if `package-lock.json` changed between the old and new trunk; otherwise the step is shown as "Dependencies unchanged — skipping npm install". When it does run, most packages are already cached, so it downloads the difference, not the whole tree.
 3. **Rebuild** — rebuild the `build/` directory so it matches the new source.
 

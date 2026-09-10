@@ -44,6 +44,7 @@ import { adminUrl, adminerUrl } from './site-urls.cjs';
 import { ticketBranchRows, ticketListCard } from './ticket-branch-list.cjs';
 import { ticketTrunkNotice, rebaseRefusal } from './ticket-trunk-notice.cjs';
 import { legacySiteNotice } from './legacy-site.cjs';
+import { mergeInProgressNotice } from './merge-in-progress.cjs';
 import { describeSwitchProgress } from '../switch-progress.cjs';
 import { highlightDiff, hasDiffLines } from './diff-highlight.cjs';
 import { highlightLog } from './log-highlight.cjs';
@@ -1337,6 +1338,9 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   const [ticketBehindTrunk, setTicketBehindTrunk] = useState(false);
   // A site the old engine made (#385): read, never written.
   const [legacy, setLegacy] = useState(false);
+  // A merge started outside the app and not finished (#352): read, and
+  // every checkout write refused until a terminal ends it.
+  const [mergeInProgress, setMergeInProgress] = useState(null);
   const [ticketInput, setTicketInput] = useState('');
   const [ticketError, setTicketError] = useState('');
   const [ticketSaving, setTicketSaving] = useState(false);
@@ -1690,6 +1694,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       setTracTicket(s?.tracTicket || null);
       setTicketBehindTrunk(Boolean(s?.ticketBehindTrunk));
       setLegacy(Boolean(s?.legacy));
+      setMergeInProgress(s?.mergeInProgress || null);
       setAppliedPatch(s?.appliedPatch || null);
       if (metaPatchRef.current) {
         // A null trunkDate here means the git read failed (e.g. clone still
@@ -1793,9 +1798,12 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   useEffect(() => {
     if (!isActive) return undefined;
     refreshDirty();
-    window.addEventListener('focus', refreshDirty);
-    return () => window.removeEventListener('focus', refreshDirty);
-  }, [isActive, refreshDirty]);
+    // The status too (#352): a merge started outside the app ends outside
+    // it, and returning focus is when the banner can have become stale.
+    const onFocus = () => { refreshDirty(); loadStatus().catch(() => {}); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [isActive, refreshDirty, loadStatus]);
 
   // Linking and unlinking are the same write (#109): an empty ref clears the
   // association, so Unlink needs no second channel. Resuming a ticket that
@@ -2781,6 +2789,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   const changesNote = changesNoteParts({ ...(worktreeDirty || {}), tracTicket });
   const staleTicketNotice = ticketTrunkNotice({ ticketId: tracTicket, behind: ticketBehindTrunk });
   const legacyNotice = legacySiteNotice({ legacy });
+  const mergeNotice = mergeInProgressNotice({ mergeInProgress });
   const updateSteps = planUpdateSteps({ lockfileChanged: updateLockfileChanged });
   const updateStepStates = updateStepStatuses(updateSteps, updateState);
 
@@ -4367,6 +4376,11 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
             <strong>{legacyNotice.title}</strong> {legacyNotice.body}
           </span>
           <Button variant="primary" onClick={onCreateSite}>Create site</Button>
+        </div>
+      ) : null}
+      {mergeNotice && !isPending ? (
+        <div role="alert" style={{ padding: '12px 16px', background: '#fcf0f1', border: '1px solid #d63638', borderRadius: 8, fontSize: 13, color: '#8a1f21' }}>
+          <strong>{mergeNotice.title}</strong> {mergeNotice.body}
         </div>
       ) : null}
       {updateIncomplete && !isUpdating ? (

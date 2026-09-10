@@ -131,6 +131,29 @@ function parseStatusV2Z(buf) {
 }
 
 /**
+ * `git status --porcelain=v2 -z` → the paths of its unmerged (`u`) entries,
+ * once each, in Git's order. Every other record is skipped whole: a `2`
+ * entry still consumes its second field, so a stray rename cannot shift the
+ * fields of what follows.
+ *
+ * @param {Buffer} buf
+ * @return {string[]}
+ */
+function parseUnmergedZ(buf) {
+	const paths = [];
+	const fields = splitNul(buf);
+	for (let i = 0; i < fields.length; i++) {
+		const entry = fields[i].toString('utf8');
+		if (entry[0] === '2') { i += 1; continue; }
+		if (entry[0] !== 'u') continue;
+		// u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
+		const filepath = entry.split(' ').slice(10).join(' ');
+		if (!paths.includes(filepath)) paths.push(filepath);
+	}
+	return paths;
+}
+
+/**
  * `git diff --name-status -z --no-renames <commit>` → status rows against
  * that commit, index column 0 because the index is not what was compared.
  * Statuses: A added, M modified, T type change, D deleted. Untracked files
@@ -350,6 +373,69 @@ async function isLegacySite(dir, { run = runGit } = {}) {
 	if (!fs.existsSync(path.join(dir, '.git', 'shallow'))) return false;
 	const { status } = await run(['config', '--local', '--get', 'remote.origin.promisor'], { cwd: dir, okCodes: [0, 1] });
 	return status === 1;
+}
+
+/**
+ * What Git records under `.git` while an operation waits for a human, and
+ * the kind each file stands for: the head files and the two rebase
+ * directories, the list `git status` itself reads. `REBASE_HEAD` is
+ * deliberately not on it: the bundled Git leaves it behind after a rebase
+ * that finished (only `--abort` removes it), so reading it would refuse
+ * every write on that site for good. The directories cover a rebase
+ * stopped on a conflict and one stopped at an `edit` alike. Not read
+ * either: `sequencer` (a multi-commit cherry-pick or revert between steps)
+ * and `BISECT_LOG`.
+ */
+const IN_PROGRESS_MARKERS = [
+	['merge', 'MERGE_HEAD'],
+	['rebase', 'rebase-merge'],
+	['rebase', 'rebase-apply'],
+	['cherry-pick', 'CHERRY_PICK_HEAD'],
+	['revert', 'REVERT_HEAD']
+];
+
+/**
+ * Whether a merge, rebase, cherry-pick, revert or three-way apply started
+ * outside the app is waiting in this checkout (#352), and on which paths.
+ * Nothing the app runs leaves the index unmerged; a contributor's or a
+ * mentor's own Git does, and every forced checkout the app's writes run
+ * erases that state without a word. So the writes ask this first.
+ *
+ * Read from the repository each time, never remembered: the unmerged
+ * entries from the same `status` line `statusRows` runs (untracked files
+ * are not walked, they cannot be unmerged), and the head files Git keeps
+ * while the operation is open. A head file with no unmerged path left is a
+ * merge resolved in an editor and not yet committed, still in progress:
+ * committing it as a WIP would lose the merge, a checkout would drop it.
+ * Unmerged entries with no head file are what `git apply --3way` leaves.
+ *
+ * @param {string}   dir
+ * @param {Object}   [options]
+ * @param {string}   [options.platform]
+ * @param {Function} [options.run]
+ * @return {Promise<?{kind: string, paths: string[]}>} `kind` is `merge`,
+ *   `rebase`, `cherry-pick`, `revert` or `apply`; null when nothing is open
+ *   or `dir` is not a repository. Rejects when the status cannot be read.
+ */
+async function mergeInProgress(dir, { platform = process.platform, run = runGit } = {}) {
+	// Not a repository: nothing can be open in it, and the flow that follows
+	// reports that on its own. Answered without a spawn, as `isLegacySite`
+	// answers its common case; a repository whose status cannot be read is
+	// a different thing and rejects below, because a write that guessed
+	// "nothing open" would erase what the read could not see.
+	if (!fs.existsSync(path.join(dir, '.git'))) return null;
+	const win = await windowsArgs(dir, { platform, run });
+	const { stdout } = await run([...win, 'status', '--porcelain=v2', '-z', '--untracked-files=no', '--no-renames'], { cwd: dir });
+	const paths = parseUnmergedZ(stdout);
+	// Where each marker lives is Git's to say: in a linked worktree `.git`
+	// is a file and the markers sit under the main repository's
+	// `worktrees/<name>/`. One `rev-parse` answers for all of them, relative
+	// to `dir` in the common case and absolute in a worktree.
+	const located = await run(['rev-parse', ...IN_PROGRESS_MARKERS.flatMap(([, name]) => ['--git-path', name])], { cwd: dir });
+	const lines = located.stdout.toString('utf8').split('\n');
+	const marker = IN_PROGRESS_MARKERS.find((_, i) => lines[i] && fs.existsSync(path.resolve(dir, lines[i])));
+	if (!marker && paths.length === 0) return null;
+	return { kind: marker ? marker[0] : 'apply', paths };
 }
 
 /**
@@ -573,6 +659,7 @@ module.exports = {
 	splitNul,
 	rowFromStatusEntry,
 	parseStatusV2Z,
+	parseUnmergedZ,
 	parseNameStatusZ,
 	parseZList,
 	parseCatFileBatch,
@@ -582,6 +669,7 @@ module.exports = {
 	crlfArgs,
 	windowsArgs,
 	isLegacySite,
+	mergeInProgress,
 	resolveRef,
 	isAncestor,
 	mergeTree,

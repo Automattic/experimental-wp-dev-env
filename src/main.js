@@ -33,7 +33,7 @@ const { fetchLinkedPrs, fetchPrDiff } = require('./github-prs');
 const { getClientId: getGithubClientId, requestDeviceCode, pollForToken, fetchViewer } = require('./github-auth.cjs');
 const { openPullRequest, buildPullRequestBody, testMode: githubTestMode } = require('./github-pr.cjs');
 const { buildPullRequestEntries } = require('./pr-files.cjs');
-const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite, remoteUrl } = require('./git-read.cjs');
+const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite, mergeInProgress, remoteUrl } = require('./git-read.cjs');
 const { cloneSite } = require('./git-clone.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
 const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
@@ -70,6 +70,7 @@ const SWITCH_PROGRESS_CHANNEL = 'switch:progress';
 const CARRIED_WORK_CHANNEL = 'ticket:carried-work';
 const { parseTicketRef } = require('./renderer/trac-ticket.cjs');
 const { LEGACY_SITE_ERROR } = require('./renderer/legacy-site.cjs');
+const { mergeInProgressError, mergeCheckFailedError } = require('./renderer/merge-in-progress.cjs');
 const { parseHandle } = require('./wporg-handle.cjs');
 const { parseEventName, buildProvenanceHeader, handoffFilename } = require('./patch-provenance.cjs');
 const { describeRefused } = require('./safe-log');
@@ -1173,6 +1174,36 @@ async function legacySiteBlock(sitePath) {
 }
 
 /**
+ * A merge, rebase, cherry-pick, revert or three-way apply started outside
+ * the app and not finished (#352). Every write here ends in a forced
+ * checkout, and a forced checkout drops the unmerged entries, the head file
+ * and the markers without a word; parking would commit the half-resolved
+ * tree as the ticket's work. So the writes that touch the checkout refuse
+ * until a terminal finishes or abandons it: the same shape as
+ * `legacySiteBlock`, the sentence naming the files and both ways out. Read
+ * from the repository on every call, never remembered. A read that fails
+ * refuses too, unlike `noOriginBlock`: there the fetch that follows fails
+ * on its own, here the checkout that follows would succeed and erase what
+ * the read could not see (a mentor's Git holding `index.lock` is the
+ * likely reason it could not). Reads, the patch export, opening a pull
+ * request, deleting the site and deleting a ticket that is not checked out
+ * stay open.
+ *
+ * @param {string} sitePath
+ */
+async function mergeInProgressBlock(sitePath) {
+    let state = null;
+    try {
+        state = await mergeInProgress(sitePath);
+    } catch (e) {
+        logError('git', `could not read the merge state of ${describeRefused(sitePath)}: ${String(e && e.stack ? e.stack : e)}`);
+        return { ok: false, code: 'merge-check-failed', error: mergeCheckFailedError(e) };
+    }
+    if (!state) return null;
+    return { ok: false, code: 'merge-in-progress', kind: state.kind, paths: state.paths, error: mergeInProgressError(state) };
+}
+
+/**
  * Runs a branch switch with the mid-switch marker around it. The marker is set
  * only when the checkout itself fails: a failure while parking moved nothing, so
  * a retry is safe and does not deserve a blocked site.
@@ -1429,8 +1460,8 @@ ipcMain.handle('git:unsubmitted-work', async (_e, sitePath) => {
 // work it just promised to throw away.
 ipcMain.handle('git:discard-to-base', async (_e, sitePath) => {
     try {
-        const legacy = await legacySiteBlock(sitePath);
-        if (legacy) return legacy;
+        const blocked = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath);
+        if (blocked) return blocked;
         const baseOid = await patchBaseOid(sitePath);
         if (baseOid) {
             await discardToBase(sitePath, baseOid, { onChild: trackGitChild(sitePath) });
@@ -1450,8 +1481,8 @@ ipcMain.handle('git:discard-to-base', async (_e, sitePath) => {
 
 ipcMain.handle('git:discard-changes', async (_e, sitePath) => {
     try {
-        const legacy = await legacySiteBlock(sitePath);
-        if (legacy) return legacy;
+        const blocked = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath);
+        if (blocked) return blocked;
         await discardChanges(sitePath, { onChild: trackGitChild(sitePath) });
         // Clearing the applied-patch record belongs with the reset that removed
         // the patch from the tree — not with the trunk update that may follow and
@@ -1494,7 +1525,9 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
         try {
             // The update rewrites `trunk` and checks it out, so it has to run
             // from trunk (#108). Park the ticket first, and return to it after.
-            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath) || await noOriginBlock(sitePath);
+            // The merge gate walks the worktree, the other two read a config value
+            // and the store; cheap first, and the walk still precedes the park.
+            const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath) || await noOriginBlock(sitePath) || await mergeInProgressBlock(sitePath);
             if (blocked) { sendLog(`\n${blocked.error}\n`); sendDone(blocked); return; }
 
             const active = await activeBranch(sitePath, { migrate: true });
@@ -1770,8 +1803,8 @@ ipcMain.handle('git:apply-patch', async (event, sitePath, options = {}) => {
                 sendDone({ ok: false, error: 'Site is not registered' });
                 return;
             }
-            const legacy = await legacySiteBlock(sitePath);
-            if (legacy) { sendLog(`\n${legacy.error}\n`); sendDone(legacy); return; }
+            const blocked = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath);
+            if (blocked) { sendLog(`\n${blocked.error}\n`); sendDone(blocked); return; }
             const stored = (await readWorkMeta(sitePath)).appliedPatch;
             if (reverse) {
                 if (!stored || !stored.text) {
@@ -1944,6 +1977,10 @@ ipcMain.handle('site:status', async (_e, sitePath) => {
 		// trunk read that fails answers null above: the status stays usable.
 		let legacy = false;
 		try { legacy = await isLegacySite(sitePath); } catch {}
+		// A merge started outside the app (#352): the card says so and the
+		// write handlers refuse. Same rule for a detector that fails.
+		let merging = null;
+		try { merging = await mergeInProgress(sitePath); } catch {}
 		// A recorded branch point and the current trunk tip are enough to warn
 		// that the context changed (#305). Missing metadata stays false: 1.0
 		// refuses to guess, and deliberately offers no checkout rewrite.
@@ -1968,9 +2005,9 @@ ipcMain.handle('site:status', async (_e, sitePath) => {
 			}
 			: null;
 
-		return { hasNodeModules, hasBuilt, skipInitWizard: Boolean(m.skipInitWizard), initialized: Boolean(m.initialized), installFailed: Boolean(m.installFailed), trunkOid, trunkDate, updateIncomplete: Boolean(work.updateIncomplete), tracTicket: m.tracTicket || null, ticketBehindTrunk, appliedPatch, legacy };
+		return { hasNodeModules, hasBuilt, skipInitWizard: Boolean(m.skipInitWizard), initialized: Boolean(m.initialized), installFailed: Boolean(m.installFailed), trunkOid, trunkDate, updateIncomplete: Boolean(work.updateIncomplete), tracTicket: m.tracTicket || null, ticketBehindTrunk, appliedPatch, legacy, mergeInProgress: merging };
 	} catch {
-		return { hasNodeModules: false, hasBuilt: false, skipInitWizard: false, initialized: false, installFailed: false, trunkOid: null, trunkDate: null, updateIncomplete: false, tracTicket: null, ticketBehindTrunk: false, appliedPatch: null, legacy: false };
+		return { hasNodeModules: false, hasBuilt: false, skipInitWizard: false, initialized: false, installFailed: false, trunkOid: null, trunkDate: null, updateIncomplete: false, tracTicket: null, ticketBehindTrunk: false, appliedPatch: null, legacy: false, mergeInProgress: null };
 	}
 });
 
@@ -2190,8 +2227,11 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 	// land here, and neither is an error. The branch and its work stay; going
 	// back to trunk is not the same as throwing a ticket away.
 	const raw = typeof ref === 'string' ? ref.trim() : '';
-	const legacy = await legacySiteBlock(sitePath);
-	if (legacy) return legacy;
+	// Both the link and the unlink end in a checkout, so both wait for a
+	// merge started outside the app (#352); before the mid-switch marker,
+	// whose retry is the forced checkout that would erase it.
+	const refused = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath);
+	if (refused) return refused;
 	if (!raw) {
 		const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
 		// Under a mid-switch marker the tree may be half another branch's and
@@ -2324,7 +2364,7 @@ ipcMain.handle('branches:list', async (_e, sitePath) => withRegisteredSite(siteP
 }));
 
 ipcMain.handle('branches:switch', async (event, sitePath, targetRef) => withRegisteredSite(sitePath, async () => {
-	const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath, { retryTo: targetRef });
+	const blocked = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath) || await midSwitchBlock(sitePath, { retryTo: targetRef });
 	if (blocked) return blocked;
 	const { ref: current, meta, site } = await activeBranch(sitePath, { migrate: true });
 	const progress = switchProgressReporter(event, sitePath);
@@ -2352,7 +2392,7 @@ ipcMain.handle('branches:switch', async (event, sitePath, targetRef) => withRegi
 // the applied-patch record survives (the patch is still in the work); only its
 // revert text is dropped.
 ipcMain.handle('branches:rebase', async (event, sitePath) => withRegisteredSite(sitePath, async () => {
-	const blocked = await legacySiteBlock(sitePath) || await midSwitchBlock(sitePath);
+	const blocked = await legacySiteBlock(sitePath) || await mergeInProgressBlock(sitePath) || await midSwitchBlock(sitePath);
 	if (blocked) return blocked;
 	const { ref, meta } = await activeBranch(sitePath, { migrate: true });
 	if (ref === TRUNK) {
@@ -2399,6 +2439,12 @@ ipcMain.handle('branches:delete', async (_e, sitePath, targetRef) => withRegiste
 	// resetting these unconditionally would unlink the ticket the contributor is
 	// actually working on and strand its patch base.
 	const { ref: current } = await activeBranch(sitePath);
+	// That checkout is the one write here, so only the delete of the branch
+	// in hand waits for a merge started outside the app (#352).
+	if (current === targetRef) {
+		const merging = await mergeInProgressBlock(sitePath);
+		if (merging) return merging;
+	}
 	await deleteTicketBranch(sitePath, targetRef, { onChild: trackGitChild(sitePath) });
 	const m = await readSiteMeta(sitePath);
 	const branches = { ...(m.branches || {}) };
