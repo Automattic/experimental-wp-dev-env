@@ -24,7 +24,7 @@ import { Terminal } from 'xterm';
 import 'xterm/css/xterm.css';
 import { computeSetupStepState, setupStepStatuses, setupStepCopy, setupAutoStartDecision, setupStepLabel } from './setup-steps.cjs';
 import { deriveNextAction } from './next-action.cjs';
-import { shouldShowTerminalHints, computeTerminalBusy } from './terminal-hints.cjs';
+import { computeTerminalBusy } from './terminal-hints.cjs';
 import { planDevServerStart, formatElapsed, watchTabLabel } from './dev-server-command.cjs';
 import { appendBounded, countLines } from './debug-log.cjs';
 import { pathBasename } from './path-basename.cjs';
@@ -2851,7 +2851,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   // Same three-stage shape as the update chain, and the same npm wrappers, so
   // exit codes and terminal streaming behave identically.
   const isApplying = applyState !== 'idle';
-  const showTerminalHints = shouldShowTerminalHints({ hasBuilt });
+  const showTerminalHints = Boolean(hasBuilt);
   const terminalBusy = computeTerminalBusy({
     terminalRunning, installing, building, starting, running, isUpdating, isApplying
   });
