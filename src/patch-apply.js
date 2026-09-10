@@ -363,6 +363,20 @@ function snapshotFiles(dir, relPaths) {
 		if (!relPath || snapshot.has(relPath)) continue;
 		const abs = entryPath(dir, relPath, true);
 		snapshot.set(relPath, abs === null ? null : snapshotEntry(abs));
+		// Remember missing intermediate directories too. Git may create them
+		// without naming them as patch entries; rollback removes only empty ones.
+		for (let parent = path.dirname(relPath); parent !== '.'; parent = path.dirname(parent)) {
+			if (snapshot.has(parent)) continue;
+			const parentAbs = entryPath(dir, parent, true);
+			if (parentAbs === null) snapshot.set(parent, null);
+			else {
+				try { fs.lstatSync(parentAbs); }
+				catch (e) {
+					if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') throw e;
+					snapshot.set(parent, null);
+				}
+			}
+		}
 	}
 	return snapshot;
 }
@@ -377,10 +391,14 @@ function snapshotFiles(dir, relPaths) {
  */
 function rollback(dir, snapshot) {
 	const errors = [];
-	for (const [relPath, previous] of snapshot) {
+	const restore = new Map();
+	const depth = (relPath) => path.resolve(dir, relPath).split(path.sep).length;
+	const deepestFirst = [...snapshot].sort(([a], [b]) => depth(b) - depth(a));
+	// Remove children before parents, without traversing a replacement link.
+	for (const [relPath, previous] of deepestFirst) {
 		try {
-			const abs = entryPath(dir, relPath);
-			const now = snapshotEntry(abs);
+			const abs = entryPath(dir, relPath, true);
+			const now = abs === null ? null : snapshotEntry(abs);
 			// Leave entries Git never changed alone, including their mtimes.
 			if (previous === null && now === null) continue;
 			if (previous && now && previous.type === now.type) {
@@ -392,7 +410,16 @@ function rollback(dir, snapshot) {
 				if (now.type === 'directory') fs.rmdirSync(abs);
 				else fs.unlinkSync(abs);
 			}
-			if (previous === null) continue;
+			if (previous !== null) restore.set(relPath, previous);
+		} catch (e) {
+			errors.push(`${relPath}: ${String(e && e.message ? e.message : e)}`);
+		}
+	}
+	// Restore parents before children. A remaining symlink parent still blocks
+	// restoration, including when its removal failed in the first phase.
+	for (const [relPath, previous] of [...restore].reverse()) {
+		try {
+			const abs = entryPath(dir, relPath);
 			fs.mkdirSync(path.dirname(abs), { recursive: true });
 			if (previous.type === 'symlink') fs.symlinkSync(previous.target, abs);
 			else if (previous.type === 'directory') fs.mkdirSync(abs);

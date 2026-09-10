@@ -1279,3 +1279,93 @@ test('applyPatchToDir: a neighbouring edit is refused the way git apply refuses 
 	assert.strictEqual(res.conflicts[0].regions[0].status, 'moved');
 	assert.strictEqual(fs.readFileSync(path.join(dir, LONG), 'utf8'), LONG_BODY.replace('line 13\n', 'line 13 on trunk\n'), 'nothing written');
 });
+
+for (const child of ['link/child', 'link/nested/child']) {
+	for (const reverse of [false, true]) {
+		for (const replay of [false, true]) {
+			test(`applyPatchToDir: rollback orders ${child} transition (reverse=${reverse}, replay=${replay}) (#413)`, async (t) => {
+				const dir = makeRepo(t, { target: 'untouched\n', blocker: 'not a directory\n' });
+				gitOk(['config', 'core.symlinks', 'true'], dir);
+				const link = path.join(dir, 'link');
+				if (reverse) {
+					fs.mkdirSync(path.dirname(path.join(dir, child)), { recursive: true });
+					fs.writeFileSync(path.join(dir, child), 'child\n');
+				} else fs.symlinkSync('target', link, 'file');
+				commitFiles(dir, ['link'], 'original entry');
+				const transition = String.raw`diff --git a/link b/link
+deleted file mode 120000
+--- a/link
++++ /dev/null
+@@ -1 +0,0 @@
+-target
+\ No newline at end of file
+diff --git a/${child} b/${child}
+new file mode 100644
+--- /dev/null
++++ b/${child}
+@@ -0,0 +1 @@
++child
+`;
+				const blocked = reverse ? `diff --git a/blocker/new.txt b/blocker/new.txt
+deleted file mode 100644
+--- a/blocker/new.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-hello
+` : `diff --git a/blocker/new.txt b/blocker/new.txt
+new file mode 100644
+--- /dev/null
++++ b/blocker/new.txt
+@@ -0,0 +1 @@
++hello
+`;
+				const apply = replay ? loadWithSuccessfulWrite(() => {
+					if (reverse) assert.strictEqual(fs.existsSync(path.join(dir, child)), false, 'Git removed the child before failing');
+					else assert.strictEqual(fs.lstatSync(link).isDirectory(), true, 'Git replaced the link before failing');
+				}) : applyPatchToDir;
+				const result = await apply({ dir, patchText: transition + blocked, reverse });
+				assert.strictEqual(result.ok, false);
+				assert.strictEqual(result.rolledBack, true, JSON.stringify(result));
+				assert.strictEqual(fs.readFileSync(path.join(dir, 'target'), 'utf8'), 'untouched\n');
+				assert.strictEqual(fs.readFileSync(path.join(dir, 'blocker'), 'utf8'), 'not a directory\n');
+				if (reverse) {
+					assert.strictEqual(fs.lstatSync(link).isDirectory(), true);
+					assert.strictEqual(fs.readFileSync(path.join(dir, child), 'utf8'), 'child\n');
+				} else {
+					assert.strictEqual(fs.lstatSync(link).isSymbolicLink(), true);
+					assert.strictEqual(fs.readlinkSync(link), 'target');
+				}
+			});
+		}
+	}
+}
+
+test('rollback: restores a replaced parent before its child without traversing the link (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-parent-order-');
+	const outside = tempDir(t, 'patch-413-outside-order-');
+	const parent = path.join(dir, 'parent');
+	fs.mkdirSync(parent);
+	fs.writeFileSync(path.join(parent, 'file'), 'before\n');
+	fs.writeFileSync(path.join(outside, 'file'), 'outside\n');
+	const taken = snapshotFiles(dir, ['parent/file', 'parent']);
+	fs.unlinkSync(path.join(parent, 'file'));
+	fs.rmdirSync(parent);
+	fs.symlinkSync(outside, parent, 'junction');
+	assert.deepStrictEqual(rollback(dir, taken), []);
+	assert.strictEqual(fs.readFileSync(path.join(outside, 'file'), 'utf8'), 'outside\n');
+	assert.strictEqual(fs.lstatSync(parent).isDirectory(), true);
+	assert.strictEqual(fs.readFileSync(path.join(parent, 'file'), 'utf8'), 'before\n');
+});
+
+test('rollback: does not remove unrelated contents of a replacement directory (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-unrelated-');
+	const link = path.join(dir, 'link');
+	fs.symlinkSync('missing', link, 'file');
+	const taken = snapshotFiles(dir, ['link', 'link/nested/child']);
+	fs.unlinkSync(link);
+	fs.mkdirSync(path.join(link, 'nested'), { recursive: true });
+	fs.writeFileSync(path.join(link, 'nested/child'), 'patch\n');
+	fs.writeFileSync(path.join(link, 'nested/unrelated'), 'keep\n');
+	assert.notStrictEqual(rollback(dir, taken).length, 0);
+	assert.strictEqual(fs.readFileSync(path.join(link, 'nested/unrelated'), 'utf8'), 'keep\n');
+});
