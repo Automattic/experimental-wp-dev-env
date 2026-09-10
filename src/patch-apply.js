@@ -471,10 +471,25 @@ async function applyPatchToDir({ dir, patchText, reverse = false, onLog = () => 
 	const touched = applicable.flatMap((section) => [section.from, section.path]).filter(Boolean);
 	const snapshot = snapshotFiles(dir, touched);
 	const written = await applyPatch(dir, applyText, { reverse, platform, prefix });
-	if (!written.ok) {
+	let writeError = written.ok ? null : written.stderr.split(/\r?\n/).filter((line) => line.trim()).pop() || `git apply exited ${written.status}`;
+	// Windows Git can exit 0 without creating a file beneath a regular-file
+	// parent (#413). Check the actual destinations before claiming success.
+	// Git still decides the contents; this only detects an omitted write.
+	if (written.ok) {
+		const destinations = new Set(applicable.map((section) => reverse ? section.from : section.to).filter(Boolean));
+		for (const relPath of destinations) {
+			try {
+				// A symlink is itself a written entry, even if its target is absent.
+				await fs.promises.lstat(path.join(dir, relPath));
+			} catch (e) {
+				writeError = `could not verify ${relPath} after git apply: ${e.message}`;
+				break;
+			}
+		}
+	}
+	if (writeError) {
 		const recovery = rollback(dir, snapshot);
-		const reason = written.stderr.split(/\r?\n/).filter((line) => line.trim()).pop() || `git apply exited ${written.status}`;
-		const message = `writing ${reason}`;
+		const message = `writing ${writeError}`;
 		if (recovery.length) {
 			onLog(`\nThe patch could not be written, and the checkout could not be fully put back — it is in an unknown state. Could not undo: ${recovery.join('; ')}\n`);
 			return { ok: false, error: message, applied: [], skipped, rolledBack: false, recovery };
