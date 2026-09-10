@@ -94,6 +94,18 @@ was fixed and what was deferred with its reason. A deferral is a decision, not
 an omission. Put the headline count in one line up in "Risks and limitations" if
 it changes how the PR should be read. -->
 
+<!-- Follow "How to report" in .github/instructions/code-review.instructions.md.
+For each reviewer, fill in the record below. Use "not run" or "partial" when
+appropriate, with the reason or remaining scope; do not turn it into zero findings.
+Update the record after subsequent changes have been checked. -->
+
+- **Reviewer:**
+- **Review status:** completed / partial / not run
+- **Reviewed head SHA / base SHA:**
+- **Changes since review:** none / `<previous SHA> → <current SHA>` checked; re-review outcome
+- **Evidence:** review link, or local independent review result
+- **Outcome:** findings resolved or deferred with reasons; remaining unreviewed scope, if any
+
 </details>
 
 <details>
