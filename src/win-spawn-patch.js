@@ -47,11 +47,6 @@ function hasDirectory(file) {
 	return name.includes('/') || name.includes('\\');
 }
 
-// Windows always sets SystemRoot; the fallback is for a stripped-down env.
-function systemRoot(env) {
-	return env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows';
-}
-
 // Mirrors libuv's PATH/PATHEXT search closely enough to tell whether a bare
 // command name would land on a script the OS cannot exec directly. Given a path
 // with a directory it just reports whether that file exists.
@@ -121,8 +116,8 @@ function resolveSpawnTarget({
 	// explicit path is somebody's deliberate choice and is kept; a Windows with no
 	// System32\tar.exe (before 10 1803) falls through to the same handling as any
 	// other command.
-	if (name === 'tar' && !hasDirectory(file)) {
-		const systemTar = lookup(path.win32.join(systemRoot(env), 'System32', 'tar.exe'), env);
+	if (name === 'tar' && !hasDirectory(file) && env.SystemRoot) {
+		const systemTar = lookup(path.win32.join(env.SystemRoot, 'System32', 'tar.exe'), env);
 		if (systemTar) {
 			return { file: systemTar, args: [...args], options };
 		}

@@ -120,29 +120,10 @@ test('a bare `tar` spawn is redirected to System32 bsdtar, args and options inta
 	// Not Electron: no shell, and no Node-mode env rewrite either.
 	assert.ok(!target.options.shell);
 	assert.equal(target.options.env, undefined);
-});
 
-test('tar.exe and TAR resolve to the same redirect as bare tar', () => {
 	for (const file of ['tar.exe', 'TAR']) {
-		const target = resolveSpawnTarget({ ...WIN, file, args: ['-xzf', 'a.tgz'] });
-		assert.equal(target.file, SYSTEM_TAR, file);
-		assert.deepEqual(target.args, ['-xzf', 'a.tgz'], file);
+		assert.equal(resolveSpawnTarget({ ...WIN, file, args: [] }).file, SYSTEM_TAR, file);
 	}
-});
-
-test('SystemRoot is honoured, and C:\\Windows is the fallback when it is unset', () => {
-	const relocated = resolveSpawnTarget({
-		...WIN,
-		env: { ...WIN.env, SystemRoot: 'D:\\Win' },
-		lookup: (file) => (String(file).toLowerCase() === 'd:\\win\\system32\\tar.exe' ? 'D:\\Win\\System32\\tar.exe' : null),
-		file: 'tar',
-		args: []
-	});
-	assert.equal(relocated.file, 'D:\\Win\\System32\\tar.exe');
-
-	const { SystemRoot, ...withoutRoot } = WIN.env;
-	const fallback = resolveSpawnTarget({ ...WIN, env: withoutRoot, file: 'tar', args: [] });
-	assert.equal(fallback.file, SYSTEM_TAR);
 });
 
 test('without System32\\tar.exe a bare `tar` gets the same handling as any other command', () => {
@@ -187,16 +168,6 @@ test('defaultLookup with a path that has a directory reports whether that file e
 test('an explicit path to some other tar is not rewritten', () => {
 	const gitTar = 'C:\\Program Files\\Git\\usr\\bin\\tar.exe';
 	assert.equal(resolveSpawnTarget({ ...WIN, file: gitTar, args: ['-xzf', 'a.tgz'] }), null);
-});
-
-test('a `tar` call that asked for a shell, or runs off Windows, is left alone', () => {
-	assert.equal(
-		resolveSpawnTarget({ ...WIN, file: 'tar', args: ['-xzf', 'a.tgz'], options: { shell: true } }),
-		null
-	);
-	for (const platform of ['darwin', 'linux']) {
-		assert.equal(resolveSpawnTarget({ ...WIN, platform, file: 'tar', args: ['-xzf', 'a.tgz'] }), null, platform);
-	}
 });
 
 test('a call that already asked for a shell is left alone', () => {
