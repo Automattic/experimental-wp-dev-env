@@ -680,7 +680,7 @@ test('rollback: reports the paths it could not restore instead of swallowing the
 
 	// Restoring this entry means writing under `afile`, which is a file, not a
 	// directory — mkdirSync/writeFileSync throw ENOTDIR.
-	const recovery = rollback(dir, new Map([['afile/child', Buffer.from('x')]]));
+	const recovery = rollback(dir, new Map([['afile/child', { type: 'file', bytes: Buffer.from('x'), mode: 0o644 }]]));
 
 	assert.ok(Array.isArray(recovery) && recovery.length === 1);
 	assert.match(recovery[0], /afile\/child/);
@@ -1101,4 +1101,103 @@ test('applyPatchToDir: added content resembling a path header is not a destinati
 	const reverse = await applyPatchToDir({ dir, patchText, reverse: true });
 	assert.strictEqual(reverse.ok, true, reverse.error);
 	assert.strictEqual(fs.readFileSync(path.join(dir, 'x.php'), 'utf8'), 'old\n');
+});
+
+for (const variant of ['different bytes', 'equal bytes', 'dangling original']) {
+	test(`applyPatchToDir: rollback restores the symlink itself with ${variant} (#413)`, async (t) => {
+		const dir = makeRepo(t, { 'inside.txt': 'inside\n', 'blocker': 'not a directory\n' });
+		gitOk(['config', 'core.symlinks', 'true'], dir);
+		const outsideDir = tempDir(t, 'patch-413-outside-');
+		const outside = path.join(outsideDir, 'untouched.txt');
+		const outsideBytes = variant === 'equal bytes' ? 'inside\n' : 'outside\n';
+		fs.writeFileSync(outside, outsideBytes);
+		const original = variant === 'dangling original' ? 'missing.txt' : 'inside.txt';
+		const link = path.join(dir, 'link');
+		fs.symlinkSync(original, link, 'file');
+		commitFiles(dir, ['link'], 'original link');
+		fs.unlinkSync(link);
+		fs.symlinkSync(outside, link, 'file');
+		const out = path.join(outsideDir, 'link.patch');
+		gitOk(['diff', '--output', out, '--', 'link'], dir);
+		const patchText = fs.readFileSync(out, 'utf8') + `diff --git a/blocker/new.txt b/blocker/new.txt
+new file mode 100644
+--- /dev/null
++++ b/blocker/new.txt
+@@ -0,0 +1 @@
++hello
+`;
+		fs.unlinkSync(link);
+		fs.symlinkSync(original, link, 'file');
+		const apply = loadWithSuccessfulWrite(() => {
+			assert.strictEqual(fs.readlinkSync(link), outside, 'Git changed the symlink before failing');
+		});
+		const result = await apply({ dir, patchText });
+		assert.strictEqual(result.ok, false);
+		assert.strictEqual(fs.readFileSync(outside, 'utf8'), outsideBytes, 'rollback must not write through the new link');
+		assert.strictEqual(fs.lstatSync(link).isSymbolicLink(), true);
+		assert.strictEqual(fs.readlinkSync(link), original);
+		assert.strictEqual(result.rolledBack, true);
+		assert.strictEqual(fs.readFileSync(path.join(dir, 'inside.txt'), 'utf8'), 'inside\n');
+	});
+}
+
+test('rollback: a file replaced by a symlink does not overwrite its target (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-file-link-');
+	const file = path.join(dir, 'file');
+	const outside = path.join(tempDir(t, 'patch-413-target-'), 'outside');
+	fs.writeFileSync(file, 'before\n');
+	fs.writeFileSync(outside, 'outside\n');
+	const taken = snapshotFiles(dir, ['file']);
+	fs.unlinkSync(file);
+	fs.symlinkSync(outside, file, 'file');
+	assert.deepStrictEqual(rollback(dir, taken), []);
+	assert.strictEqual(fs.readFileSync(outside, 'utf8'), 'outside\n');
+	assert.strictEqual(fs.lstatSync(file).isFile(), true);
+	assert.strictEqual(fs.readFileSync(file, 'utf8'), 'before\n');
+});
+
+test('rollback: refuses to restore through a changed parent symlink (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-parent-');
+	const parent = path.join(dir, 'parent');
+	const outside = tempDir(t, 'patch-413-parent-target-');
+	fs.mkdirSync(parent);
+	fs.writeFileSync(path.join(parent, 'file'), 'before\n');
+	fs.writeFileSync(path.join(outside, 'file'), 'outside\n');
+	const taken = snapshotFiles(dir, ['parent/file']);
+	fs.unlinkSync(path.join(parent, 'file'));
+	fs.rmdirSync(parent);
+	fs.symlinkSync(outside, parent, 'junction');
+	const errors = rollback(dir, taken);
+	assert.strictEqual(fs.readFileSync(path.join(outside, 'file'), 'utf8'), 'outside\n');
+	assert.strictEqual(errors.length, 1);
+	assert.match(errors[0], /parent\/file/);
+});
+
+test('applyPatchToDir: a symlink can become a directory and return to a symlink (#413)', async (t) => {
+	const dir = makeRepo(t, { target: 'untouched\n' });
+	gitOk(['config', 'core.symlinks', 'true'], dir);
+	const link = path.join(dir, 'link');
+	fs.symlinkSync('target', link, 'file');
+	commitFiles(dir, ['link'], 'original link');
+	const patchText = `diff --git a/link b/link
+deleted file mode 120000
+--- a/link
++++ /dev/null
+@@ -1 +0,0 @@
+-target
+\\ No newline at end of file
+diff --git a/link/child b/link/child
+new file mode 100644
+--- /dev/null
++++ b/link/child
+@@ -0,0 +1 @@
++child
+`;
+	const applied = await applyPatchToDir({ dir, patchText });
+	assert.strictEqual(applied.ok, true, applied.error);
+	assert.strictEqual(fs.readFileSync(path.join(link, 'child'), 'utf8'), 'child\n');
+	const reverted = await applyPatchToDir({ dir, patchText, reverse: true });
+	assert.strictEqual(reverted.ok, true, reverted.error);
+	assert.strictEqual(fs.readlinkSync(link), 'target');
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'target'), 'utf8'), 'untouched\n');
 });
