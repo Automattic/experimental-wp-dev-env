@@ -25,6 +25,8 @@ There is deliberately no per-tool copy of the *standard*. A wrapper is a few lin
 
 An Electron desktop app ("WordPress Contributor Toolkit") that sets up a full WordPress core (`wordpress-develop`) dev environment with zero prerequisites — no Git, Node, npm, or Docker required on the host. Everything is bundled and run as JS/WASM inside the Electron process. Built to fix a Contributor Day problem: newcomers burning the whole session on local setup instead of contributing. Still labeled "experimental."
 
+Its first audience is a first-time contributor with no Git on the machine; an experienced Git user is served second, and only where it costs the first nothing.
+
 ## Before opening a pull request
 
 Run the review in `.github/instructions/code-review.instructions.md` against the branch, and fix or consciously defer every finding. Summarise the outcome in the pull request description — counts, what was fixed, what was left as a follow-up and why.
@@ -81,6 +83,8 @@ See `package.json` scripts. To run a single test file (not exposed as a script):
 Do not run Electron or E2E tests from a worktree without its own `node_modules`. Install dependencies in that worktree first, and do not rely on `NODE_PATH` from another worktree for Electron tests.
 
 Prefer the simplest fix for reproducible user-facing failures. Do not add defensive state or branches for hypothetical edge cases unless a test demonstrates a realistic path.
+
+**Scope guards by what the app itself can do.** A state the app cannot produce through its own flows is out of scope by default: a rebase, a multi-commit cherry-pick or a `git am` left half done from a terminal, a checkout adopted from a linked worktree. The app must not destroy such a state when it meets one (#352), and saying "I do not understand this repository" is a valid answer; modelling each one, or offering to finish it, is not. Prefer one honest refusal over a family of cases, and record the cases you deliberately left out in the PR's Risks section rather than as issues.
 
 **[TESTING.md](TESTING.md) is the canonical description of the suite** — the five layers it is made of, which one a new test belongs in, what each layer is blind to, and how to read a failure. Read it before adding or moving a test; do not restate it elsewhere.
 
