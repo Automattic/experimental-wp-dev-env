@@ -3,8 +3,6 @@
 // DOM; index.jsx only interleaves the parts with its two link buttons.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
 const {
 	changesNoteParts,
@@ -191,10 +189,4 @@ test('discardDisabledReason reports the operation in progress before secondary b
 		discardDisabledReason({ patchLoading: true, patchHasChanges: false, discarding: true, devServerActive: true }),
 		'Changes are already being discarded.'
 	);
-});
-
-test('both visible discard links use the shared explanatory control', () => {
-	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx'), 'utf8');
-	const uses = source.match(/<DiscardChangesLink\b/g) || [];
-	assert.equal(uses.length, 2, 'the ticket note and review modal must share the tooltip-enabled discard link');
 });

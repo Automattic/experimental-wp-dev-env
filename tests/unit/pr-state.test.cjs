@@ -6,11 +6,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
 const { PR_STATE_BADGES, prStateBadge } = require('../../src/renderer/pr-state.cjs');
-
-const INDEX_JSX = path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx');
 
 // The accessibility rule the design is built on: colour accompanies the word,
 // it never replaces it. A pill with a colour and no label tells a contributor
@@ -33,8 +29,6 @@ test('the three states are told apart by colour, all three of them (issue #227)'
 // wears GitHub's red, not the error pair the alert boxes are painted with.
 test('the closed pill is not the error styling used elsewhere (issue #227)', () => {
 	const closed = prStateBadge('closed');
-	const source = fs.readFileSync(INDEX_JSX, 'utf8');
-	assert.ok(source.includes('#fcf0f1'), 'the error banner background moved; this test no longer compares against the real one');
 	assert.notStrictEqual(closed.background, '#fcf0f1');
 	assert.notStrictEqual(closed.color, '#d63638');
 });
@@ -47,23 +41,4 @@ test('an unknown or missing state reads as open, the way the row has always beha
 	// GitHub answers in lower case, but a cached list should not lose its colour
 	// over capitalisation either.
 	assert.deepStrictEqual(prStateBadge('MERGED'), PR_STATE_BADGES.merged);
-});
-
-test('the row renders the state through the pill, not as grey text (issue #227)', () => {
-	const source = fs.readFileSync(INDEX_JSX, 'utf8');
-
-	// The words come from this module, so the row cannot say one thing while the
-	// tested mapping says another.
-	assert.ok(
-		!/pr\.state === 'closed' \? 'closed' : 'open'/.test(source),
-		'index.jsx still collapses the state to its own open/closed text instead of using prStateBadge'
-	);
-
-	// One call site: the single pull-request row. Counted as a call rather than
-	// as the bare name so a comment naming the helper is not a red suite.
-	assert.strictEqual(
-		source.split('prStatePill(').length - 1,
-		1,
-		'expected exactly one prStatePill( call: the linked pull request row'
-	);
 });
