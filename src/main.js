@@ -2162,7 +2162,15 @@ async function withRegisteredSite(sitePath, run) {
 		// file a contributor attaches to a bug report — and two of the three
 		// channels have no UI to show that string yet.
 		logError('branches', `${describeRefused(sitePath)}: ${String(e && e.stack ? e.stack : e)}`);
-		return { ok: false, error: String(e && e.message ? e.message : e), code: e && e.code, ...(e && Array.isArray(e.conflicts) ? { conflicts: e.conflicts } : {}) };
+		return {
+			ok: false,
+			error: String(e && e.message ? e.message : e),
+			code: e && e.code,
+			...(e && Array.isArray(e.conflicts) ? { conflicts: e.conflicts } : {}),
+			// The kind of each conflict (`content`, `modify/delete`, `add/add`),
+			// so the refusal can say which (#351).
+			...(e && e.kinds && typeof e.kinds === 'object' ? { kinds: e.kinds } : {})
+		};
 	}
 }
 

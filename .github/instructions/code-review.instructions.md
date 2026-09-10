@@ -133,6 +133,7 @@ macOS and Windows are the primary targets; Linux artifacts are published too. CI
 
 - Mocking the very thing the test claims to verify.
 - Asserting implementation details — exact log strings, call order of internals — instead of observable behaviour. These break on harmless refactors and survive real bugs.
+- Cleanup that is green while doing nothing. `t.after` hooks run in the order they were registered, so a fixture that reaches outside its own temporary directory (a worktree beside it, a patch file next to it) cannot clean up through a repository an earlier hook already removed; remove it as a directory with `removeRepo`, and use the throwing helper (`gitOk`) for any cleanup that goes through Git, or the only symptom is disk filling up.
 - Passing on only one of the two Node runtimes. CI runs the suite on `.nvmrc`'s Node *and* on Electron's bundled Node because the two are set independently and have drifted; a test (or the code under it) that assumes the newer of the two is broken on the other.
 
 **Platform-conditional code needs both branches tested — from one machine.** The house pattern is dependency injection, not skipping: `tests/unit/win-spawn-patch.test.cjs` exercises the Windows paths from macOS by injecting `platform`, lookup and env rather than reading `process.platform`. A new platform split tested with `it.skip` on the other OS is a coverage hole CI will never close, since the suite runs on both platforms but each skips the other's branch.

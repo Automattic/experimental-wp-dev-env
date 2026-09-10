@@ -3512,9 +3512,10 @@ test('branches:rebase refuses on trunk, without a recorded base, on a legacy sit
 
 test('branches:rebase hands a conflict back with the paths, and the base stays where it was (#385)', async () => {
 	const rebaseOntoTrunk = spy(async () => {
-		const error = new Error('Trunk changed the same lines');
+		const error = new Error('Trunk and this ticket\'s work disagree');
 		error.code = 'rebase-conflict';
 		error.conflicts = ['src/wp-login.php'];
+		error.kinds = { 'src/wp-login.php': 'modify/delete' };
 		throw error;
 	});
 	const settings = rebaseFixture();
@@ -3527,6 +3528,7 @@ test('branches:rebase hands a conflict back with the paths, and the base stays w
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'rebase-conflict');
 	assert.deepEqual(result.conflicts, ['src/wp-login.php']);
+	assert.deepEqual(result.kinds, { 'src/wp-login.php': 'modify/delete' }, 'the kind reaches the renderer (#351)');
 	const branch = settings.values.siteMeta['/sites/wp'].branches['ticket/61002'];
 	assert.equal(branch.baseOid, 'old');
 	assert.equal(branch.appliedPatch.label, 'A.diff', 'nothing moved, so nothing is forgotten');

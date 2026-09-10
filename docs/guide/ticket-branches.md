@@ -93,7 +93,7 @@ Updating the site moves its copy of trunk, but deliberately does not move existi
 
 > **Trunk has moved since this ticket started.** Newer patches may not apply cleanly. Move your work onto the current trunk here, or save a copy of it and start the ticket again.
 
-Nothing moves on its own. The notice carries a button, **Update this ticket to the current trunk**, that replays the ticket's work onto the trunk the site now has: the same lines you changed, on top of the new code, in one step. Edits you have not parked yet come along. It is all or nothing: if trunk changed the same lines as your work, the app refuses, names the files, and moves nothing. The button waits while an update, an install, a build or the dev server is running, for the same reason the discard link does.
+Nothing moves on its own. The notice carries a button, **Update this ticket to the current trunk**, that replays the ticket's work onto the trunk the site now has: the same lines you changed, on top of the new code, in one step. Edits you have not parked yet come along. It is all or nothing: if trunk and your work disagree, for instance because trunk changed the same lines, one side deleted a file the other edited, or both added the same file, the app refuses, names the files and the reason, and moves nothing. These are the same conflicts Git itself would report for that merge. The button waits while an update, an install, a build or the dev server is running, for the same reason the discard link does.
 
 When the move is refused, or when you would rather see the work land on fresh code yourself, the manual path is still there:
 
