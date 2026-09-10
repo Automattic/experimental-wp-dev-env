@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const read = require('../../src/git-read.cjs');
-const { git, tempDir } = require('./helpers/git.cjs');
+const { git, tempDir, removeRepo } = require('./helpers/git.cjs');
 
 // The read functions against a repository the bundled Git built, so the flag
 // set each command uses is proven on this platform too, including the states
@@ -186,3 +186,88 @@ test('mergeTree merges two sides from a base without touching the index or the w
 	assert.match(conflicted.tree, /^[0-9a-f]{40}$/, 'a tree is still written, with markers, for whoever wants it');
 	await assert.rejects(read.mergeTree(dir, { base, ours: '0000000000000000000000000000000000000001', theirs }), (e) => e.code === 128);
 });
+
+// #351's acceptance bar for the one three-way merge the app performs: the
+// files `mergeTree` names are the files `git merge` leaves unmerged, and the
+// markers in the tree it writes sit on the same lines as the markers `git
+// merge` leaves in a worktree. One fixture per conflict shape a ticket and a
+// moving trunk actually produce; the clean shapes prove the app refuses
+// nothing Git would accept.
+const MERGE_BASE = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+const withLine = (text, n, replacement) => text.split('\n').map((l, i) => (i === n - 1 ? replacement : l)).join('\n');
+const markerRegions = (text) => {
+	const regions = [];
+	let start = -1;
+	text.split('\n').forEach((line, i) => {
+		if (line.startsWith('<<<<<<<')) start = i + 1;
+		if (line.startsWith('>>>>>>>') && start !== -1) { regions.push(`${start}-${i + 1}`); start = -1; }
+	});
+	return regions;
+};
+
+const MERGE_SHAPES = [
+	{ name: 'same lines', ours: { 'a.php': withLine(MERGE_BASE, 10, 'line 10 OURS') }, theirs: { 'a.php': withLine(MERGE_BASE, 10, 'line 10 THEIRS') }, conflicts: ['src/a.php'] },
+	{ name: 'same file, far apart', ours: { 'a.php': withLine(MERGE_BASE, 3, 'line 3 OURS') }, theirs: { 'a.php': withLine(MERGE_BASE, 25, 'line 25 THEIRS') }, conflicts: [] },
+	{ name: 'same file, adjacent lines', ours: { 'a.php': withLine(MERGE_BASE, 10, 'line 10 OURS') }, theirs: { 'a.php': withLine(MERGE_BASE, 12, 'line 12 THEIRS') }, conflicts: [] },
+	{ name: 'rename on trunk, modify on the ticket', ours: { 'a.php': null, 'b.php': MERGE_BASE }, theirs: { 'a.php': withLine(MERGE_BASE, 15, 'line 15 THEIRS') }, conflicts: [] },
+	{ name: 'delete on trunk, modify on the ticket', ours: { 'a.php': null }, theirs: { 'a.php': withLine(MERGE_BASE, 15, 'line 15 THEIRS') }, conflicts: ['src/a.php'] },
+	{ name: 'modify on trunk, delete on the ticket', ours: { 'a.php': withLine(MERGE_BASE, 15, 'line 15 OURS') }, theirs: { 'a.php': null }, conflicts: ['src/a.php'] },
+	{ name: 'same new path on both sides', ours: { 'new.php': '<?php // ours\n' }, theirs: { 'new.php': '<?php // theirs\n' }, conflicts: ['src/new.php'] },
+	{ name: 'three regions, one clashing', ours: { 'a.php': withLine(MERGE_BASE, 15, 'line 15 OURS') }, theirs: { 'a.php': withLine(withLine(withLine(MERGE_BASE, 3, 'line 3 THEIRS'), 15, 'line 15 THEIRS'), 27, 'line 27 THEIRS') }, conflicts: ['src/a.php'] }
+];
+
+for (const shape of MERGE_SHAPES) {
+	test(`mergeTree names the files and regions git merge would, ${shape.name} (#351)`, async (t) => {
+		const dir = makeRepo(t);
+		const author = ['-c', 'user.name=T', '-c', 'user.email=t@example.com'];
+		const writeSide = (files) => {
+			for (const [name, content] of Object.entries(files)) {
+				const abs = path.join(dir, 'src', name);
+				if (content === null) fs.rmSync(abs);
+				else fs.writeFileSync(abs, content);
+			}
+			assert.equal(git(['add', '-A'], dir).status, 0);
+			assert.equal(git([...author, 'commit', '-q', '-m', 'side'], dir).status, 0);
+			return git(['rev-parse', 'HEAD'], dir).stdout;
+		};
+		fs.writeFileSync(path.join(dir, 'src', 'a.php'), MERGE_BASE);
+		assert.equal(git(['add', '-A'], dir).status, 0);
+		assert.equal(git([...author, 'commit', '-q', '-m', 'base'], dir).status, 0);
+		const base = git(['rev-parse', 'HEAD'], dir).stdout;
+		const theirs = writeSide(shape.theirs);
+		assert.equal(git(['reset', '-q', '--hard', base], dir).status, 0);
+		const ours = writeSide(shape.ours);
+
+		// What Git itself would show: a real merge in a throwaway worktree,
+		// the unmerged paths from the index and the markers from disk.
+		const worktree = path.join(dir, '..', `${path.basename(dir)}-merge`);
+		assert.equal(git(['worktree', 'add', '-q', '--detach', worktree, ours], dir).status, 0);
+		// The fixture's own cleanup registered first and runs first, taking
+		// the repository with it, so the worktree is removed as a directory
+		// (with #381's read-only objects in mind) rather than through Git.
+		t.after(() => removeRepo(worktree));
+		const merge = git([...author, 'merge', '--no-ff', '--no-commit', theirs], worktree);
+		const unmerged = git(['diff', '--name-only', '--diff-filter=U'], worktree).stdout.split('\n').filter(Boolean);
+		assert.equal(merge.status, unmerged.length ? 1 : 0, merge.stderr);
+
+		const result = await read.mergeTree(dir, { base, ours, theirs });
+		assert.deepEqual(unmerged, shape.conflicts, 'the fixture produces the shape it claims');
+		assert.equal(result.conflicted, unmerged.length > 0);
+		assert.deepEqual(result.conflicts, unmerged, 'same files');
+		// Same kind, too: the word `git merge` prints in `CONFLICT (…)` for
+		// each path is the one the app hands the refusal (#351).
+		const printed = {};
+		for (const line of merge.stdout.split('\n')) {
+			const m = line.match(/^CONFLICT \(([^)]+)\): (?:Merge conflict in (.+)|(\S+) deleted in)/);
+			if (m) printed[m[2] || m[3]] = m[1];
+		}
+		assert.deepEqual(result.kinds, printed, 'same kinds');
+		for (const relPath of unmerged) {
+			const onDisk = fs.existsSync(path.join(worktree, relPath)) ? fs.readFileSync(path.join(worktree, relPath), 'utf8') : null;
+			const inTree = git(['show', `${result.tree}:${relPath}`], dir);
+			// Git's merge leaves the modified side in place when the other side
+			// deleted it: no markers on either side, and that is the agreement.
+			assert.deepEqual(inTree.status === 0 ? markerRegions(inTree.stdout) : [], onDisk === null ? [] : markerRegions(onDisk), `same regions in ${relPath}`);
+		}
+	});
+}
