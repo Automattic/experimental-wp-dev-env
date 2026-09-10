@@ -95,16 +95,11 @@ an omission. Put the headline count in one line up in "Risks and limitations" if
 it changes how the PR should be read. -->
 
 <!-- Follow "How to report" in .github/instructions/code-review.instructions.md.
-For each reviewer, fill in the record below. Use "not run" or "partial" when
-appropriate, with the reason or remaining scope; do not turn it into zero findings.
-Update the record after subsequent changes have been checked. -->
+Add one record per reviewer. For "not run" or "partial", include the reason or
+remaining scope; after a push, preserve the SHA comparison and re-review outcome. -->
 
-- **Reviewer:**
-- **Review status:** completed / partial / not run
-- **Reviewed head SHA / base SHA:**
-- **Changes since review:** none / `<previous SHA> → <current SHA>` checked; re-review outcome
-- **Evidence:** review link, or local independent review result
-- **Outcome:** findings resolved or deferred with reasons; remaining unreviewed scope, if any
+- **Review:** completed / partial / not run — reviewer; reviewed head SHA / base SHA; evidence; outcome
+- **Since review:** none / `<previous SHA> → <current SHA>` checked; re-review outcome
 
 </details>
 
