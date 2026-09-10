@@ -15,6 +15,10 @@
  * party in the path of a test that is about the checkout.
  */
 
+const fs = require( 'node:fs' );
+const os = require( 'node:os' );
+const path = require( 'node:path' );
+const { gitOk, commitFiles } = require( '../../unit/helpers/git.cjs' );
 const { test, expect } = require( '../helpers/app.cjs' );
 const {
 	makeSite,
@@ -172,4 +176,59 @@ test( 'a patch that does not fit is refused, and writes nothing', async ( { sess
 
 	// INVARIANT — and nothing is offered to undo, because nothing was done.
 	await expect( page.getByRole( 'button', { name: 'Revert this patch', exact: true } ) ).toHaveCount( 0 );
+} );
+
+
+test( 'a partial patch failure restores the symlink and leaves no applied record (#413)', async ( { session } ) => {
+	const site = await makeSite( session );
+	const outsideDir = session.track( fs.mkdtempSync( path.join( os.tmpdir(), 'wpct-e2e-outside-' ) ) );
+	const outside = path.join( outsideDir, 'untouched.txt' );
+	fs.writeFileSync( outside, 'outside\n' );
+	const link = path.join( site.dir, 'src', 'link' );
+	gitOk( [ 'config', 'core.symlinks', 'true' ], site.dir );
+	fs.symlinkSync( 'wp-login.php', link, 'file' );
+	write( site.dir, 'src/blocker', 'not a directory\n' );
+	commitFiles( site.dir, [ 'src/link', 'src/blocker' ], 'patch failure fixture' );
+
+	// Generate the symlink diff with bundled Git so Windows targets are encoded
+	// correctly. Restore the fixture before the app sees it.
+	fs.unlinkSync( link );
+	fs.symlinkSync( outside, link, 'file' );
+	const patch = path.join( outsideDir, 'blocked.patch' );
+	gitOk( [ 'diff', '--output', patch, '--', 'src/link' ], site.dir );
+	fs.appendFileSync( patch, `diff --git a/src/blocker/new.txt b/src/blocker/new.txt
+new file mode 100644
+--- /dev/null
++++ b/src/blocker/new.txt
+@@ -0,0 +1 @@
++hello
+` );
+	fs.unlinkSync( link );
+	fs.symlinkSync( 'wp-login.php', link, 'file' );
+
+	const { page } = await session.start( site.settings );
+	await linkTicket( page, '60001' );
+	await session.answerFileDialog( [ patch ] );
+	await page.getByRole( 'button', { name: 'or choose a .diff / .patch file…', exact: true } ).click();
+	await expect( page.getByText( 'src/link', { exact: true } ) ).toBeVisible();
+	await page.getByRole( 'button', { name: 'Apply and rebuild', exact: true } ).click();
+
+	// INVARIANT: a partial write is reported as a failure, never as success.
+	const failure = page.getByRole( 'alert' ).filter( { hasText: 'The checkout was not changed' } );
+	await expect( failure ).toBeVisible();
+	await expect( failure ).toContainText( 'src/blocker/new.txt' );
+
+	// INVARIANT: recovery restores link identity without writing outside the site.
+	expect( fs.readFileSync( outside, 'utf8' ) ).toBe( 'outside\n' );
+	expect( fs.lstatSync( link ).isSymbolicLink() ).toBe( true );
+	expect( fs.readlinkSync( link ) ).toBe( 'wp-login.php' );
+	expect( read( site.dir, LOGIN ) ).toBe( `${ TRUNK_LOGIN }\n` );
+	expect( read( site.dir, 'src/blocker' ) ).toBe( 'not a directory\n' );
+	expect( fs.existsSync( path.join( site.dir, 'src/blocker/new.txt' ) ) ).toBe( false );
+	expect( read( site.dir, SUBSTRATE ) ).toBe( SUBSTRATE_CONTENT );
+	await expect( page.getByRole( 'button', { name: 'Revert this patch', exact: true } ) ).toHaveCount( 0 );
+
+	// CHARACTERISATION: the failed patch is absent from the persisted ticket record.
+	const meta = session.readSettings().siteMeta[ site.dir ];
+	expect( meta.branches[ 'ticket/60001' ].appliedPatch ).toBeFalsy();
 } );
