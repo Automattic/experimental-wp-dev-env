@@ -98,9 +98,11 @@ function mapToSrcLayout(filePath) {
  *
  * `path` is the file the section ends on; `from` the one it starts from
  * (the same file for a modify, the source of a rename, empty for an add).
+ * `to` is the actual destination, empty for a deletion; `path` keeps the
+ * deleted path for display and snapshots.
  *
  * @param {string} text EOL-normalised patch text.
- * @return {Array<{path: string, from: string, text: string, isBinary: boolean, hasBinaryData: boolean}>}
+ * @return {Array<{path: string, from: string, to: string, text: string, isBinary: boolean, hasBinaryData: boolean}>}
  */
 function splitPatchSections(text) {
 	const lines = text.split('\n');
@@ -122,7 +124,7 @@ function splitPatchSections(text) {
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		if (startsSection(line, i)) {
-			current = { path: '', from: '', lines: [], isBinary: false, hasBinaryData: false, sawHeader: false };
+			current = { path: '', from: '', lines: [], isBinary: false, hasBinaryData: false, sawHeader: false, isAdd: false, isDelete: false };
 			sections.push(current);
 			const git = /^diff --git (?:"?a\/)?(.+?)"? (?:"?b\/)?(.+?)"?$/.exec(line);
 			const svn = /^Index: (.+)$/.exec(line);
@@ -133,12 +135,14 @@ function splitPatchSections(text) {
 		if (!current) continue;
 		current.lines.push(line);
 		const named = (l) => l.slice(4).replace(/\t.*$/, '');
-		if (line.startsWith('+++ ')) {
+		if (line.startsWith('+++ ') && !current.sawHeader) {
+			current.isDelete = named(line) === '/dev/null';
 			current.sawHeader = true;
 			const to = named(line);
 			current.path = to === '/dev/null' ? current.path : to.replace(/^[ab]\//, '');
 		} else if (line.startsWith('--- ') && !current.sawHeader) {
 			const from = named(line);
+			current.isAdd = from === '/dev/null';
 			current.from = from === '/dev/null' ? '' : from.replace(/^[ab]\//, '');
 			if (!current.path) current.path = current.from;
 		}
@@ -146,13 +150,16 @@ function splitPatchSections(text) {
 		if (renameFrom) current.from = renameFrom[1].trim();
 		const renameTo = /^rename to (.+)$/.exec(line);
 		if (renameTo) current.path = renameTo[1].trim();
+		if (/^new file mode \d+$/.test(line)) current.isAdd = true;
+		if (/^deleted file mode \d+$/.test(line)) current.isDelete = true;
 		if (/^Binary files .* differ$/.test(line)) current.isBinary = true;
 		if (/^GIT binary patch$/.test(line)) { current.isBinary = true; current.hasBinaryData = true; }
 	}
 	const clean = (p) => (p === '/dev/null' ? '' : p);
-	return sections.map(({ path: sectionPath, from, lines: sectionLines, isBinary, hasBinaryData }) => ({
+	return sections.map(({ path: sectionPath, from, lines: sectionLines, isBinary, hasBinaryData, isAdd, isDelete }) => ({
 		path: clean(sectionPath),
-		from: clean(from),
+		from: isAdd ? '' : clean(from),
+		to: isDelete ? '' : clean(sectionPath),
 		text: `${sectionLines.join('\n')}\n`,
 		isBinary,
 		hasBinaryData

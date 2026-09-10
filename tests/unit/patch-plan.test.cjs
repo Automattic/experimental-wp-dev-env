@@ -478,7 +478,7 @@ test('splitPatchSections: one section per file, binary data told apart from a da
 	assert.deepStrictEqual(sections.map((s) => [s.path, s.from, s.isBinary, s.hasBinaryData]), [
 		['src/wp-includes/foo.php', 'src/wp-includes/foo.php', false, false],
 		['src/x.png', 'src/x.png', true, false],
-		['src/x.png', 'src/x.png', true, true],
+		['src/x.png', '', true, true],
 		['src/new.php', '', false, false]
 	]);
 	assert.strictEqual(sections.map((s) => s.text).join(''), text.slice(text.indexOf('diff --git')), 'the sections are the text, minus the prose');
@@ -499,4 +499,21 @@ test('parsePatchFiles: a binary or a pure rename ahead of a text file is not swa
 		['binary', 'src/x.png'], ['rename', 'src/new.php'], ['modify', 'src/wp-includes/foo.php'], ['binary', 'src/x.png']
 	]);
 	assert.strictEqual(files[1].oldPath, 'src/old.php');
+});
+
+test('splitPatchSections: records actual destinations for forward and reverse writes (#413)', () => {
+	const cases = [
+		['diff --git a/a.php b/a.php\n--- a/a.php\n+++ b/a.php\n@@ -1 +1 @@\n-old\n+new\n', 'a.php', 'a.php'],
+		['diff --git a/a.php b/a.php\n--- /dev/null\n+++ b/a.php\n@@ -0,0 +1 @@\n+new\n', '', 'a.php'],
+		['diff --git a/a.php b/a.php\n--- a/a.php\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n', 'a.php', ''],
+		['diff --git a/a.php b/a.php\nnew file mode 100644\nindex 0000000..e69de29\n', '', 'a.php'],
+		['diff --git a/a.php b/a.php\ndeleted file mode 100644\nindex e69de29..0000000\n', 'a.php', ''],
+		['diff --git a/a.bin b/a.bin\nnew file mode 100644\nGIT binary patch\nliteral 0\nHcmV?d00001\n', '', 'a.bin'],
+		['diff --git a/a.bin b/a.bin\ndeleted file mode 100644\nGIT binary patch\nliteral 0\nHcmV?d00001\n', 'a.bin', ''],
+		['diff --git a/a.php b/b.php\nsimilarity index 100%\nrename from a.php\nrename to b.php\n', 'a.php', 'b.php']
+	];
+	for (const [text, from, to] of cases) {
+		const [section] = splitPatchSections(text);
+		assert.deepStrictEqual([section.from, section.to], [from, to], text);
+	}
 });

@@ -295,61 +295,138 @@ function explainRefusal(dir, file) {
 }
 
 /**
- * What the files a patch names hold right now, so a write Git left half done
- * can be put back. `null` records an absent file (to be removed again).
+ * Resolve a snapshot path without traversing a symlink below the checkout.
+ * The root itself may use an OS alias (such as macOS /var).
+ *
+ * @param {string}  dir
+ * @param {string}  relPath
+ * @param {boolean} snapshot Whether to treat paths behind links as absent.
+ * @return {?string}
+ */
+function entryPath(dir, relPath, snapshot = false) {
+	const root = fs.realpathSync(dir);
+	const abs = path.resolve(root, relPath);
+	const relative = path.relative(root, abs);
+	if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+		throw new Error('Path is outside the checkout');
+	}
+	let parent = root;
+	for (const part of relative.split(path.sep).slice(0, -1)) {
+		parent = path.join(parent, part);
+		let stat;
+		try { stat = fs.lstatSync(parent); }
+		catch (e) {
+			if (e.code === 'ENOENT' || e.code === 'ENOTDIR') break;
+			throw e;
+		}
+		if (stat.isSymbolicLink()) {
+			// Git may replace this link with a directory. Its future children
+			// have no pre-patch entries here; never snapshot the link's target.
+			if (snapshot) return null;
+			throw new Error(`Parent is a symbolic link: ${parent}`);
+		}
+		if (!stat.isDirectory()) break;
+	}
+	return abs;
+}
+
+/**
+ * Read the entry itself, never a symlink's target. Null means absent.
+ *
+ * @param {string} abs
+ * @return {?Object}
+ */
+function snapshotEntry(abs) {
+	let stat;
+	try { stat = fs.lstatSync(abs); }
+	catch (e) {
+		if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null;
+		throw e;
+	}
+	if (stat.isSymbolicLink()) return { type: 'symlink', target: fs.readlinkSync(abs) };
+	if (stat.isDirectory()) return { type: 'directory' };
+	if (!stat.isFile()) throw new Error('Unsupported filesystem entry');
+	// eslint-disable-next-line no-bitwise -- Keep only filesystem permission bits.
+	return { type: 'file', bytes: fs.readFileSync(abs), mode: stat.mode & 0o777 };
+}
+
+/**
+ * What the entries a patch names hold, so a partial write can be put back.
  *
  * @param {string}   dir
  * @param {string[]} relPaths
- * @return {Map<string, ?Buffer>}
+ * @return {Map<string, ?Object>}
  */
 function snapshotFiles(dir, relPaths) {
 	const snapshot = new Map();
 	for (const relPath of relPaths) {
 		if (!relPath || snapshot.has(relPath)) continue;
-		let previous = null;
-		try { previous = fs.readFileSync(path.join(dir, relPath)); } catch { previous = null; }
-		snapshot.set(relPath, previous);
+		const abs = entryPath(dir, relPath, true);
+		snapshot.set(relPath, abs === null ? null : snapshotEntry(abs));
+		// Remember missing intermediate directories too. Git may create them
+		// without naming them as patch entries; rollback removes only empty ones.
+		for (let parent = path.dirname(relPath); parent !== '.'; parent = path.dirname(parent)) {
+			if (snapshot.has(parent)) continue;
+			const parentAbs = entryPath(dir, parent, true);
+			if (parentAbs === null) snapshot.set(parent, null);
+			else {
+				try { fs.lstatSync(parentAbs); }
+				catch (e) {
+					if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') throw e;
+					snapshot.set(parent, null);
+				}
+			}
+		}
 	}
 	return snapshot;
 }
 
 /**
- * Puts back everything a failed run had already written.
- *
- * Returns the paths it could not restore. The same full-disk, lock, or
- * permission condition that broke a write can also break its undo, and the
- * caller must not claim a clean restore when the tree is actually unknown.
+ * Restore entries without following changed links. Nonempty directories and
+ * paths behind a symlink are refused rather than risking unrelated files.
  *
  * @param {string}               dir
- * @param {Map<string, ?Buffer>} snapshot From `snapshotFiles`.
- * @return {Array<string>} paths whose rollback failed (empty when fully restored)
+ * @param {Map<string, ?Object>} snapshot
+ * @return {Array<string>} Paths whose rollback failed.
  */
 function rollback(dir, snapshot) {
 	const errors = [];
-	const unchanged = (abs, previous) => {
+	const restore = new Map();
+	const depth = (relPath) => path.resolve(dir, relPath).split(path.sep).length;
+	const deepestFirst = [...snapshot].sort(([a], [b]) => depth(b) - depth(a));
+	// Remove children before parents, without traversing a replacement link.
+	for (const [relPath, previous] of deepestFirst) {
 		try {
-			const now = fs.readFileSync(abs);
-			return previous !== null && now.equals(previous);
-		} catch (e) {
-			return previous === null && e && e.code === 'ENOENT';
-		}
-	};
-	for (const [relPath, previous] of snapshot) {
-		const abs = path.join(dir, relPath);
-		// A file Git never reached is left alone: writing the snapshot back
-		// over it would only move its mtime, or, if something else edited it
-		// between the check and the write, lose that edit.
-		if (unchanged(abs, previous)) continue;
-		try {
-			if (previous === null) {
-				// Removing something that was never created is the desired end
-				// state, not a failure.
-				try { fs.rmSync(abs, { force: true }); }
-				catch (e) { if (!e || (e.code !== 'ENOTDIR' && e.code !== 'ENOENT')) throw e; }
-				continue;
+			const abs = entryPath(dir, relPath, true);
+			const now = abs === null ? null : snapshotEntry(abs);
+			// Leave entries Git never changed alone, including their mtimes.
+			if (previous === null && now === null) continue;
+			if (previous && now && previous.type === now.type) {
+				if (previous.type === 'directory') continue;
+				if (previous.type === 'symlink' && previous.target === now.target) continue;
+				if (previous.type === 'file' && previous.mode === now.mode && previous.bytes.equals(now.bytes)) continue;
 			}
+			if (now) {
+				if (now.type === 'directory') fs.rmdirSync(abs);
+				else fs.unlinkSync(abs);
+			}
+			if (previous !== null) restore.set(relPath, previous);
+		} catch (e) {
+			errors.push(`${relPath}: ${String(e && e.message ? e.message : e)}`);
+		}
+	}
+	// Restore parents before children. A remaining symlink parent still blocks
+	// restoration, including when its removal failed in the first phase.
+	for (const [relPath, previous] of [...restore].reverse()) {
+		try {
+			const abs = entryPath(dir, relPath);
 			fs.mkdirSync(path.dirname(abs), { recursive: true });
-			fs.writeFileSync(abs, previous);
+			if (previous.type === 'symlink') fs.symlinkSync(previous.target, abs);
+			else if (previous.type === 'directory') fs.mkdirSync(abs);
+			else {
+				fs.writeFileSync(abs, previous.bytes, { flag: 'wx', mode: previous.mode });
+				fs.chmodSync(abs, previous.mode);
+			}
 		} catch (e) {
 			errors.push(`${relPath}: ${String(e && e.message ? e.message : e)}`);
 		}
@@ -469,12 +546,33 @@ async function applyPatchToDir({ dir, patchText, reverse = false, onLog = () => 
 	// for. Both ends of every section: a rename names the file it moves away
 	// from as well as the one it makes.
 	const touched = applicable.flatMap((section) => [section.from, section.path]).filter(Boolean);
-	const snapshot = snapshotFiles(dir, touched);
+	let snapshot;
+	try { snapshot = snapshotFiles(dir, touched); }
+	catch (e) {
+		const error = `Could not snapshot the checkout before applying the patch: ${e.message}`;
+		onLog(`\n${error}\n`);
+		return { ok: false, error, applied: [], skipped };
+	}
 	const written = await applyPatch(dir, applyText, { reverse, platform, prefix });
-	if (!written.ok) {
+	let writeError = written.ok ? null : written.stderr.split(/\r?\n/).filter((line) => line.trim()).pop() || `git apply exited ${written.status}`;
+	// Windows Git can exit 0 without creating a file beneath a regular-file
+	// parent (#413). Check the actual destinations before claiming success.
+	// Git still decides the contents; this only detects an omitted write.
+	if (written.ok) {
+		const destinations = new Set(applicable.map((section) => reverse ? section.from : section.to).filter(Boolean));
+		for (const relPath of destinations) {
+			try {
+				// A symlink is itself a written entry, even if its target is absent.
+				await fs.promises.lstat(path.join(dir, relPath));
+			} catch (e) {
+				writeError = `could not verify ${relPath} after git apply: ${e.message}`;
+				break;
+			}
+		}
+	}
+	if (writeError) {
 		const recovery = rollback(dir, snapshot);
-		const reason = written.stderr.split(/\r?\n/).filter((line) => line.trim()).pop() || `git apply exited ${written.status}`;
-		const message = `writing ${reason}`;
+		const message = `writing ${writeError}`;
 		if (recovery.length) {
 			onLog(`\nThe patch could not be written, and the checkout could not be fully put back — it is in an unknown state. Could not undo: ${recovery.join('; ')}\n`);
 			return { ok: false, error: message, applied: [], skipped, rolledBack: false, recovery };

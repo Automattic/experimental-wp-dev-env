@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const JsDiff = require('diff');
+const Module = require('node:module');
 const { applyPatchToDir, rollback, snapshotFiles, diagnoseHunks } = require('../../src/patch-apply');
 const { parsePatchFiles } = require('../../src/patch-plan.cjs');
 const { git, gitOk, initRepo, commitFiles, tempDir, removeRepo } = require('./helpers/git.cjs');
@@ -374,13 +375,11 @@ test('applyPatchToDir: an unreadable patch reports why and changes nothing (issu
 // cannot write by construction. This is the one that can — a write that throws
 // partway through, after earlier files are already on disk.
 //
-// POSIX only for now (#413): on Windows the bundled Git exits 0 on the same
-// patch, so the injection does not inject and the rollback path goes
-// unexercised there until the cause is known.
-test('applyPatchToDir: a write failing partway through is rolled back (issue #11)', { skip: process.platform === 'win32' && '#413' }, async (t) => {
+// Windows Git reports success despite the missing child (#413); POSIX fails.
+// Both must restore the earlier writes.
+test('applyPatchToDir: a write failing partway through is rolled back (issue #11)', async (t) => {
 	// src/blocker is a regular file, so creating src/blocker/new.php fails with
-	// ENOTDIR — deterministically, on every platform — after foo.php has
-	// already been written.
+	// a blocked path after foo.php has already been written.
 	const dir = makeRepo(t, { [FOO]: FOO_BODY, 'src/blocker': 'not a directory\n' });
 	const before = snapshot(dir);
 
@@ -649,8 +648,7 @@ index 0000000..e69de29
 // A rename that completes and is then undone by a later failure must restore the
 // source and remove the destination — registering each action before its
 // mutations is what lets rollback see a half-done one. (Copilot #3.)
-// Same injection as above, so the same Windows skip (#413).
-test('applyPatchToDir: a later failure rolls a completed rename fully back (issue #11)', { skip: process.platform === 'win32' && '#413' }, async (t) => {
+test('applyPatchToDir: a later failure rolls a completed rename fully back (issue #11)', async (t) => {
 	const dir = makeRepo(t, { 'src/old.php': 'one\ntwo\n', 'src/blocker': 'not a directory\n' });
 	const before = snapshot(dir);
 	const renameThenBlocked = `diff --git a/src/old.php b/src/new.php
@@ -682,7 +680,7 @@ test('rollback: reports the paths it could not restore instead of swallowing the
 
 	// Restoring this entry means writing under `afile`, which is a file, not a
 	// directory — mkdirSync/writeFileSync throw ENOTDIR.
-	const recovery = rollback(dir, new Map([['afile/child', Buffer.from('x')]]));
+	const recovery = rollback(dir, new Map([['afile/child', { type: 'file', bytes: Buffer.from('x'), mode: 0o644 }]]));
 
 	assert.ok(Array.isArray(recovery) && recovery.length === 1);
 	assert.match(recovery[0], /afile\/child/);
@@ -974,6 +972,236 @@ test('applyPatchToDir: a failing reverse reports which regions were edited over 
 	assert.strictEqual(res.conflicts[0].regions.length, 1);
 });
 
+// Replay the Windows 2.53.0.windows.4 result on every OS. The real binary
+// still checks and writes the fixture; only its final result is replaced.
+// No applier or rollback logic is mocked, and the native cases above remain.
+function loadWithSuccessfulWrite(onWrite) {
+	const primitives = require('../../src/git-write.cjs');
+	const filename = require.resolve('../../src/patch-apply');
+	const cached = require.cache[filename];
+	const originalLoad = Module._load;
+	Module._load = function (request, parent, isMain) {
+		if (parent && parent.filename === filename && request === './git-write.cjs') {
+			return { ...primitives, applyPatch: async (...args) => {
+				const result = await primitives.applyPatch(...args);
+				if (args[2].check) return result;
+				onWrite();
+				return { ok: true, status: 0, stderr: '' };
+			} };
+		}
+		return originalLoad.call(this, request, parent, isMain);
+	};
+	try {
+		delete require.cache[filename];
+		return require(filename).applyPatchToDir;
+	} finally {
+		Module._load = originalLoad;
+		if (cached) require.cache[filename] = cached;
+		else delete require.cache[filename];
+	}
+}
+
+test('applyPatchToDir: a successful exit with a missing addition restores earlier writes (#413)', async (t) => {
+	const dir = makeRepo(t, { [FOO]: FOO_BODY, 'src/blocker': 'not a directory\n' });
+	const before = snapshot(dir);
+	let wrote = false;
+	const apply = loadWithSuccessfulWrite(() => {
+		wrote = true;
+		assert.strictEqual(fs.readFileSync(path.join(dir, FOO), 'utf8'), 'one\nTWO\nthree\n');
+		assert.strictEqual(fs.existsSync(path.join(dir, 'src/blocker/new.php')), false);
+	});
+	const patchText = FOO_PATCH + `diff --git a/src/blocker/new.php b/src/blocker/new.php
+new file mode 100644
+--- /dev/null
++++ b/src/blocker/new.php
+@@ -0,0 +1 @@
++hello
+`;
+	const result = await apply({ dir, patchText });
+	assert.strictEqual(wrote, true, 'the write, not just preflight, was exercised');
+	assert.strictEqual(result.ok, false);
+	assert.strictEqual(result.rolledBack, true);
+	assert.match(result.error, /src\/blocker\/new\.php/);
+	assert.deepStrictEqual(result.applied, []);
+	assert.deepStrictEqual(snapshot(dir), before);
+});
+
+for (const reverse of [false, true]) {
+	for (const kind of ['text', 'empty', 'binary', 'rename']) {
+		test(`applyPatchToDir: ${reverse ? 'reverse' : 'forward'} ${kind} creation cannot silently disappear (#413)`, async (t) => {
+			const child = 'src/blocker/new.php';
+			const source = 'src/source.php';
+			let bytes = 'hello\n';
+			if (kind === 'binary') bytes = Buffer.from([0, 255, 1, 128]);
+			if (kind === 'empty') bytes = '';
+			// Generate the patch with Git, including header-only and binary shapes.
+			const initial = { 'kept.txt': 'kept\n' };
+			if (reverse) initial[child] = bytes;
+			else if (kind === 'rename') initial[source] = bytes;
+			const scratch = makeRepo(t, initial);
+			if (reverse) fs.unlinkSync(path.join(scratch, child));
+			else if (kind === 'rename') fs.unlinkSync(path.join(scratch, source));
+			if (!reverse || kind === 'rename') {
+				const destination = path.join(scratch, reverse ? source : child);
+				fs.mkdirSync(path.dirname(destination), { recursive: true });
+				fs.writeFileSync(destination, bytes);
+			}
+			gitOk(['add', '-A'], scratch);
+			const out = path.join(tempDir(t, 'patch-413-diff-'), 'change.diff');
+			gitOk(['diff', '--cached', '--binary', '--find-renames', '--output', out], scratch);
+			const generated = fs.readFileSync(out, 'utf8');
+			const patchText = reverse ? generated + FOO_PATCH : FOO_PATCH + generated;
+			const files = { [FOO]: reverse ? 'one\nTWO\nthree\n' : FOO_BODY, 'src/blocker': 'not a directory\n' };
+			if (kind === 'rename') files[source] = bytes;
+			const dir = makeRepo(t, files);
+			const before = snapshot(dir);
+			let wrote = false;
+			const apply = loadWithSuccessfulWrite(() => {
+				wrote = true;
+				assert.notDeepStrictEqual(snapshot(dir), before, 'Git left a partial write');
+				assert.strictEqual(fs.existsSync(path.join(dir, child)), false);
+			});
+			const result = await apply({ dir, patchText, reverse });
+			assert.strictEqual(wrote, true);
+			assert.strictEqual(result.ok, false);
+			assert.strictEqual(result.rolledBack, true);
+			assert.match(result.error, /src\/blocker\/new\.php/);
+			assert.deepStrictEqual(snapshot(dir), before);
+		});
+	}
+}
+
+test('applyPatchToDir: a file can become a directory and return to a file (#413)', async (t) => {
+	const dir = makeRepo(t, { 'src/blocker': 'hello\n' });
+	const patchText = `diff --git a/src/blocker b/src/blocker/new.php
+similarity index 100%
+rename from src/blocker
+rename to src/blocker/new.php
+`;
+	const applied = await applyPatchToDir({ dir, patchText });
+	assert.strictEqual(applied.ok, true, applied.error);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'src/blocker/new.php'), 'utf8'), 'hello\n');
+	const reverted = await applyPatchToDir({ dir, patchText, reverse: true });
+	assert.strictEqual(reverted.ok, true, reverted.error);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'src/blocker'), 'utf8'), 'hello\n');
+});
+
+test('applyPatchToDir: added content resembling a path header is not a destination (#413)', async (t) => {
+	const dir = makeRepo(t, { 'x.php': 'old\n' });
+	const patchText = `diff --git a/x.php b/x.php
+--- a/x.php
++++ b/x.php
+@@ -1 +1 @@
+-old
++++ hello
+`;
+	const result = await applyPatchToDir({ dir, patchText });
+	assert.strictEqual(result.ok, true, result.error);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'x.php'), 'utf8'), '++ hello\n');
+	const reverse = await applyPatchToDir({ dir, patchText, reverse: true });
+	assert.strictEqual(reverse.ok, true, reverse.error);
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'x.php'), 'utf8'), 'old\n');
+});
+
+for (const variant of ['different bytes', 'equal bytes', 'dangling original']) {
+	test(`applyPatchToDir: rollback restores the symlink itself with ${variant} (#413)`, async (t) => {
+		const dir = makeRepo(t, { 'inside.txt': 'inside\n', 'blocker': 'not a directory\n' });
+		gitOk(['config', 'core.symlinks', 'true'], dir);
+		const outsideDir = tempDir(t, 'patch-413-outside-');
+		const outside = path.join(outsideDir, 'untouched.txt');
+		const outsideBytes = variant === 'equal bytes' ? 'inside\n' : 'outside\n';
+		fs.writeFileSync(outside, outsideBytes);
+		const original = variant === 'dangling original' ? 'missing.txt' : 'inside.txt';
+		const link = path.join(dir, 'link');
+		fs.symlinkSync(original, link, 'file');
+		commitFiles(dir, ['link'], 'original link');
+		fs.unlinkSync(link);
+		fs.symlinkSync(outside, link, 'file');
+		const out = path.join(outsideDir, 'link.patch');
+		gitOk(['diff', '--output', out, '--', 'link'], dir);
+		const patchText = fs.readFileSync(out, 'utf8') + `diff --git a/blocker/new.txt b/blocker/new.txt
+new file mode 100644
+--- /dev/null
++++ b/blocker/new.txt
+@@ -0,0 +1 @@
++hello
+`;
+		fs.unlinkSync(link);
+		fs.symlinkSync(original, link, 'file');
+		const apply = loadWithSuccessfulWrite(() => {
+			assert.strictEqual(fs.readlinkSync(link), outside, 'Git changed the symlink before failing');
+		});
+		const result = await apply({ dir, patchText });
+		assert.strictEqual(result.ok, false);
+		assert.strictEqual(fs.readFileSync(outside, 'utf8'), outsideBytes, 'rollback must not write through the new link');
+		assert.strictEqual(fs.lstatSync(link).isSymbolicLink(), true);
+		assert.strictEqual(fs.readlinkSync(link), original);
+		assert.strictEqual(result.rolledBack, true);
+		assert.strictEqual(fs.readFileSync(path.join(dir, 'inside.txt'), 'utf8'), 'inside\n');
+	});
+}
+
+test('rollback: a file replaced by a symlink does not overwrite its target (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-file-link-');
+	const file = path.join(dir, 'file');
+	const outside = path.join(tempDir(t, 'patch-413-target-'), 'outside');
+	fs.writeFileSync(file, 'before\n');
+	fs.writeFileSync(outside, 'outside\n');
+	const taken = snapshotFiles(dir, ['file']);
+	fs.unlinkSync(file);
+	fs.symlinkSync(outside, file, 'file');
+	assert.deepStrictEqual(rollback(dir, taken), []);
+	assert.strictEqual(fs.readFileSync(outside, 'utf8'), 'outside\n');
+	assert.strictEqual(fs.lstatSync(file).isFile(), true);
+	assert.strictEqual(fs.readFileSync(file, 'utf8'), 'before\n');
+});
+
+test('rollback: refuses to restore through a changed parent symlink (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-parent-');
+	const parent = path.join(dir, 'parent');
+	const outside = tempDir(t, 'patch-413-parent-target-');
+	fs.mkdirSync(parent);
+	fs.writeFileSync(path.join(parent, 'file'), 'before\n');
+	fs.writeFileSync(path.join(outside, 'file'), 'outside\n');
+	const taken = snapshotFiles(dir, ['parent/file']);
+	fs.unlinkSync(path.join(parent, 'file'));
+	fs.rmdirSync(parent);
+	fs.symlinkSync(outside, parent, 'junction');
+	const errors = rollback(dir, taken);
+	assert.strictEqual(fs.readFileSync(path.join(outside, 'file'), 'utf8'), 'outside\n');
+	assert.strictEqual(errors.length, 1);
+	assert.match(errors[0], /parent\/file/);
+});
+
+test('applyPatchToDir: a symlink can become a directory and return to a symlink (#413)', async (t) => {
+	const dir = makeRepo(t, { target: 'untouched\n' });
+	gitOk(['config', 'core.symlinks', 'true'], dir);
+	const link = path.join(dir, 'link');
+	fs.symlinkSync('target', link, 'file');
+	commitFiles(dir, ['link'], 'original link');
+	const patchText = `diff --git a/link b/link
+deleted file mode 120000
+--- a/link
++++ /dev/null
+@@ -1 +0,0 @@
+-target
+\\ No newline at end of file
+diff --git a/link/child b/link/child
+new file mode 100644
+--- /dev/null
++++ b/link/child
+@@ -0,0 +1 @@
++child
+`;
+	const applied = await applyPatchToDir({ dir, patchText });
+	assert.strictEqual(applied.ok, true, applied.error);
+	assert.strictEqual(fs.readFileSync(path.join(link, 'child'), 'utf8'), 'child\n');
+	const reverted = await applyPatchToDir({ dir, patchText, reverse: true });
+	assert.strictEqual(reverted.ok, true, reverted.error);
+	assert.strictEqual(fs.readlinkSync(link), 'target');
+	assert.strictEqual(fs.readFileSync(path.join(dir, 'target'), 'utf8'), 'untouched\n');
+});
+
 // #351's acceptance bar for the patch flow. `git apply` decides, so the
 // files and the hunks the app names have to be the ones Git names: the
 // region breakdown is derived by jsdiff, which is a second opinion on Git's
@@ -1050,4 +1278,94 @@ test('applyPatchToDir: a neighbouring edit is refused the way git apply refuses 
 	assert.strictEqual(res.ok, false, 'and so does the app');
 	assert.strictEqual(res.conflicts[0].regions[0].status, 'moved');
 	assert.strictEqual(fs.readFileSync(path.join(dir, LONG), 'utf8'), LONG_BODY.replace('line 13\n', 'line 13 on trunk\n'), 'nothing written');
+});
+
+for (const child of ['link/child', 'link/nested/child']) {
+	for (const reverse of [false, true]) {
+		for (const replay of [false, true]) {
+			test(`applyPatchToDir: rollback orders ${child} transition (reverse=${reverse}, replay=${replay}) (#413)`, async (t) => {
+				const dir = makeRepo(t, { target: 'untouched\n', blocker: 'not a directory\n' });
+				gitOk(['config', 'core.symlinks', 'true'], dir);
+				const link = path.join(dir, 'link');
+				if (reverse) {
+					fs.mkdirSync(path.dirname(path.join(dir, child)), { recursive: true });
+					fs.writeFileSync(path.join(dir, child), 'child\n');
+				} else fs.symlinkSync('target', link, 'file');
+				commitFiles(dir, ['link'], 'original entry');
+				const transition = String.raw`diff --git a/link b/link
+deleted file mode 120000
+--- a/link
++++ /dev/null
+@@ -1 +0,0 @@
+-target
+\ No newline at end of file
+diff --git a/${child} b/${child}
+new file mode 100644
+--- /dev/null
++++ b/${child}
+@@ -0,0 +1 @@
++child
+`;
+				const blocked = reverse ? `diff --git a/blocker/new.txt b/blocker/new.txt
+deleted file mode 100644
+--- a/blocker/new.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-hello
+` : `diff --git a/blocker/new.txt b/blocker/new.txt
+new file mode 100644
+--- /dev/null
++++ b/blocker/new.txt
+@@ -0,0 +1 @@
++hello
+`;
+				const apply = replay ? loadWithSuccessfulWrite(() => {
+					if (reverse) assert.strictEqual(fs.existsSync(path.join(dir, child)), false, 'Git removed the child before failing');
+					else assert.strictEqual(fs.lstatSync(link).isDirectory(), true, 'Git replaced the link before failing');
+				}) : applyPatchToDir;
+				const result = await apply({ dir, patchText: transition + blocked, reverse });
+				assert.strictEqual(result.ok, false);
+				assert.strictEqual(result.rolledBack, true, JSON.stringify(result));
+				assert.strictEqual(fs.readFileSync(path.join(dir, 'target'), 'utf8'), 'untouched\n');
+				assert.strictEqual(fs.readFileSync(path.join(dir, 'blocker'), 'utf8'), 'not a directory\n');
+				if (reverse) {
+					assert.strictEqual(fs.lstatSync(link).isDirectory(), true);
+					assert.strictEqual(fs.readFileSync(path.join(dir, child), 'utf8'), 'child\n');
+				} else {
+					assert.strictEqual(fs.lstatSync(link).isSymbolicLink(), true);
+					assert.strictEqual(fs.readlinkSync(link), 'target');
+				}
+			});
+		}
+	}
+}
+
+test('rollback: restores a replaced parent before its child without traversing the link (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-parent-order-');
+	const outside = tempDir(t, 'patch-413-outside-order-');
+	const parent = path.join(dir, 'parent');
+	fs.mkdirSync(parent);
+	fs.writeFileSync(path.join(parent, 'file'), 'before\n');
+	fs.writeFileSync(path.join(outside, 'file'), 'outside\n');
+	const taken = snapshotFiles(dir, ['parent/file', 'parent']);
+	fs.unlinkSync(path.join(parent, 'file'));
+	fs.rmdirSync(parent);
+	fs.symlinkSync(outside, parent, 'junction');
+	assert.deepStrictEqual(rollback(dir, taken), []);
+	assert.strictEqual(fs.readFileSync(path.join(outside, 'file'), 'utf8'), 'outside\n');
+	assert.strictEqual(fs.lstatSync(parent).isDirectory(), true);
+	assert.strictEqual(fs.readFileSync(path.join(parent, 'file'), 'utf8'), 'before\n');
+});
+
+test('rollback: does not remove unrelated contents of a replacement directory (#413)', (t) => {
+	const dir = tempDir(t, 'patch-413-unrelated-');
+	const link = path.join(dir, 'link');
+	fs.symlinkSync('missing', link, 'file');
+	const taken = snapshotFiles(dir, ['link', 'link/nested/child']);
+	fs.unlinkSync(link);
+	fs.mkdirSync(path.join(link, 'nested'), { recursive: true });
+	fs.writeFileSync(path.join(link, 'nested/child'), 'patch\n');
+	fs.writeFileSync(path.join(link, 'nested/unrelated'), 'keep\n');
+	assert.notStrictEqual(rollback(dir, taken).length, 0);
+	assert.strictEqual(fs.readFileSync(path.join(link, 'nested/unrelated'), 'utf8'), 'keep\n');
 });
