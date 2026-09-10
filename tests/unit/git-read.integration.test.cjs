@@ -271,3 +271,131 @@ for (const shape of MERGE_SHAPES) {
 		}
 	});
 }
+
+// --- a merge in progress (#352) --------------------------------------------
+//
+// Nothing the app runs leaves unmerged entries behind; a mentor's own Git
+// does. These fixtures are the three unmerged shapes #351's probe found
+// (content, delete/modify, add/add), made by the bundled binary the way a
+// terminal would make them, then resolved or abandoned the same way.
+
+const ID = ['-c', 'user.name=T', '-c', 'user.email=t@example.com'];
+const commitAll = (dir, message) => {
+	assert.equal(git(['add', '-A'], dir).status, 0);
+	const commit = git([...ID, 'commit', '-q', '-m', message], dir);
+	assert.equal(commit.status, 0, commit.stderr);
+	return git(['rev-parse', 'HEAD'], dir).stdout;
+};
+const writeOrRemove = (dir, rel, content) => {
+	const abs = path.join(dir, rel);
+	if (content === null) fs.rmSync(abs, { force: true });
+	else fs.writeFileSync(abs, content);
+};
+
+/**
+ * Trunk and a `mentor/fix` branch that disagree on each path given: what
+ * each side wrote (null removes it). Returns with trunk checked out and
+ * nothing merged.
+ *
+ * @param {import('node:test').TestContext}                  t
+ * @param {Object<string, {ours: ?string, theirs: ?string}>} paths
+ */
+function forkedRepo(t, paths) {
+	const dir = makeRepo(t);
+	assert.equal(git(['checkout', '-q', '-b', 'mentor/fix'], dir).status, 0);
+	for (const [rel, { theirs }] of Object.entries(paths)) writeOrRemove(dir, rel, theirs);
+	commitAll(dir, 'theirs');
+	assert.equal(git(['checkout', '-q', 'trunk'], dir).status, 0);
+	for (const [rel, { ours }] of Object.entries(paths)) writeOrRemove(dir, rel, ours);
+	commitAll(dir, 'ours');
+	return dir;
+}
+
+const inGitDir = (dir, name) => fs.existsSync(path.join(dir, '.git', name));
+
+test('mergeInProgress: a merge left conflicted by a terminal is reported with its paths, by the same read after a restart, until it is committed (#352)', async (t) => {
+	const dir = forkedRepo(t, {
+		'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' },
+		'with space.txt': { ours: null, theirs: 'kept and changed\n' },
+		'src/new.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' }
+	});
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null, 'nothing in progress before the merge');
+
+	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1, 'the merge stops on conflicts');
+	assert.equal(inGitDir(dir, 'MERGE_HEAD'), true);
+	assert.deepEqual(git(['ls-files', '-u'], dir).stdout.split('\n').map((line) => line.split('\t')[1]).sort(), [
+		'src/new.php', 'src/new.php', 'src/wp-login.php', 'src/wp-login.php', 'src/wp-login.php', 'with space.txt', 'with space.txt'
+	], 'stages 1/2/3, 2/3 and 1/3');
+
+	// The read carries no memory: a fresh copy of the module answers from disk.
+	delete require.cache[require.resolve('../../src/git-read.cjs')];
+	const fresh = require('../../src/git-read.cjs');
+	const state = await fresh.mergeInProgress(dir, { platform: 'darwin' });
+	assert.equal(state.kind, 'merge');
+	assert.deepEqual([...state.paths].sort(), ['src/new.php', 'src/wp-login.php', 'with space.txt']);
+
+	// Resolved in an editor and staged, but not committed: still in progress,
+	// no unmerged paths left to name.
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // both\n');
+	fs.writeFileSync(path.join(dir, 'src', 'new.php'), '<?php // both\n');
+	assert.equal(git(['add', 'src/wp-login.php', 'src/new.php', 'with space.txt'], dir).status, 0);
+	assert.deepEqual(await read.mergeInProgress(dir, { platform: 'darwin' }), { kind: 'merge', paths: [] });
+
+	assert.equal(git([...ID, 'commit', '-q', '-m', 'merged by hand'], dir).status, 0);
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null, 'committed: over');
+	assert.equal(inGitDir(dir, 'MERGE_HEAD'), false);
+});
+
+test('mergeInProgress: `git merge --abort` ends it, and a clean tree with a loose edit is not one (#352)', async (t) => {
+	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
+	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1);
+	assert.notEqual(await read.mergeInProgress(dir, { platform: 'darwin' }), null);
+	assert.equal(git(['merge', '--abort'], dir).status, 0);
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null);
+	assert.equal(fs.readFileSync(path.join(dir, 'src', 'wp-login.php'), 'utf8'), '<?php // ours\n', 'the abort put trunk back');
+
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // edited\n');
+	fs.writeFileSync(path.join(dir, 'untracked.txt'), 'u\n');
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null, 'an ordinary dirty tree is not a merge');
+});
+
+test('mergeInProgress: a rebase, a cherry-pick and a three-way apply are each their own kind (#352)', async (t) => {
+	const clash = { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } };
+
+	const rebasing = forkedRepo(t, clash);
+	assert.equal(git(['checkout', '-q', 'mentor/fix'], rebasing).status, 0);
+	assert.equal(git(['rebase', 'trunk'], rebasing).status, 1);
+	assert.deepEqual(await read.mergeInProgress(rebasing, { platform: 'darwin' }), { kind: 'rebase', paths: ['src/wp-login.php'] });
+	assert.equal(git(['rebase', '--abort'], rebasing).status, 0);
+	assert.equal(await read.mergeInProgress(rebasing, { platform: 'darwin' }), null);
+
+	const picking = forkedRepo(t, clash);
+	assert.equal(git(['cherry-pick', 'mentor/fix'], picking).status, 1);
+	assert.deepEqual(await read.mergeInProgress(picking, { platform: 'darwin' }), { kind: 'cherry-pick', paths: ['src/wp-login.php'] });
+
+	// `git apply --3way` writes the unmerged entries and no head file at all:
+	// the index is the only evidence.
+	const applying = forkedRepo(t, clash);
+	const patch = path.join(applying, '..', `${path.basename(applying)}.patch`);
+	t.after(() => fs.rmSync(patch, { force: true }));
+	fs.writeFileSync(patch, `${git(['diff', 'trunk~1', 'mentor/fix'], applying).stdout}\n`);
+	assert.equal(git(['apply', '--3way', patch], applying).status, 1);
+	assert.equal(inGitDir(applying, 'MERGE_HEAD'), false);
+	assert.deepEqual(await read.mergeInProgress(applying, { platform: 'darwin' }), { kind: 'apply', paths: ['src/wp-login.php'] });
+	assert.equal(git(['restore', '--staged', '--worktree', '--', 'src/wp-login.php'], applying).status, 0, 'the way out the sentence names');
+	assert.equal(await read.mergeInProgress(applying, { platform: 'darwin' }), null);
+});
+
+test('CHARACTERISATION: the forced checkout every app write runs erases a merge in progress without a word, which is why the block exists (#352)', async (t) => {
+	const { checkoutBranch } = require('../../src/git-write.cjs');
+	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
+	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1);
+	assert.match(fs.readFileSync(path.join(dir, 'src', 'wp-login.php'), 'utf8'), /^<<<<<<< /m, 'markers in the tree');
+
+	await checkoutBranch(dir, 'trunk', { platform: 'darwin' });
+
+	assert.equal(inGitDir(dir, 'MERGE_HEAD'), false, 'the merge is gone');
+	assert.equal(git(['ls-files', '-u'], dir).stdout, '', 'and so are the unmerged entries');
+	assert.equal(fs.readFileSync(path.join(dir, 'src', 'wp-login.php'), 'utf8'), '<?php // ours\n', 'and the markers, and the mentor\'s side');
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null);
+});

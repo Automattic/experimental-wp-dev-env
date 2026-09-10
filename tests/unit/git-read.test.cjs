@@ -220,3 +220,16 @@ test('isAncestor is one merge-base question, answered by the exit code (#385)', 
 	assert.deepEqual(calls[0].args, ['merge-base', '--is-ancestor', 'yes', 'head1']);
 	assert.deepEqual(calls[0].options, { cwd: '/sites/wp', okCodes: [0, 1] });
 });
+
+test('unmerged paths: only `u` entries, once per path, a rename entry consumed whole (#352)', () => {
+	const buf = z(
+		'1 .M N... 100644 100644 100644 aaaa bbbb src/wp-login.php',
+		'2 R. N... 100644 100644 100644 cccc dddd R100 renamed.php', 'u UU N... 100644 100644 100644 100644 eeee ffff gggg not-a-conflict.php',
+		'u UU N... 100644 100644 100644 100644 eeee ffff gggg src/conflicted.php',
+		'u DU N... 100644 000000 100644 100644 eeee 0000 gggg deleted here.php',
+		'u AA N... 000000 100644 100644 100644 0000 ffff gggg src/added twice.php',
+		'? untracked.txt'
+	);
+	assert.deepEqual(read.parseUnmergedZ(buf), ['src/conflicted.php', 'deleted here.php', 'src/added twice.php']);
+	assert.deepEqual(read.parseUnmergedZ(Buffer.alloc(0)), []);
+});
