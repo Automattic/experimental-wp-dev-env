@@ -189,7 +189,6 @@ function handoffFilename({ handle, ticketId } = {}) {
 
 module.exports = {
 	TITLE,
-	SHORT_OID_LENGTH,
 	MAX_FIELD_LENGTH,
 	MAX_EVENT_LENGTH,
 	parseEventName,
