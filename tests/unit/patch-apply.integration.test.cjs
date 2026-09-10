@@ -995,9 +995,14 @@ test('applyPatchToDir: the regions it names are the hunks git apply --reject rej
 	fs.writeFileSync(patchFile, LONG_PATCH);
 	t.after(() => fs.rmSync(patchFile, { force: true }));
 
-	const reject = git(['apply', '--reject', '-v', patchFile], worktree);
+	const reject = git(['apply', '--reject', patchFile], worktree);
 	assert.strictEqual(reject.status, 1, reject.stderr);
-	const rejected = [...reject.stderr.matchAll(/Rejected hunk #(\d+)\./g)].map((m) => Number(m[1]) - 1);
+	// What Git rejected is in the `.rej` it writes beside the file: the
+	// rejected hunks in diff format. Matching their headers against the
+	// patch's own gives the index of each, with no diagnostic text read.
+	const hunkHeaders = (text) => text.split('\n').filter((line) => line.startsWith('@@ '));
+	const rejectedHeaders = hunkHeaders(fs.readFileSync(path.join(worktree, `${LONG}.rej`), 'utf8'));
+	const rejected = hunkHeaders(LONG_PATCH).map((header, index) => (rejectedHeaders.includes(header) ? index : -1)).filter((index) => index !== -1);
 	assert.deepStrictEqual(rejected, [1], 'the fixture rejects the middle hunk and nothing else');
 
 	const res = await applyPatchToDir({ dir, patchText: LONG_PATCH });
@@ -1007,7 +1012,7 @@ test('applyPatchToDir: the regions it names are the hunks git apply --reject rej
 	assert.strictEqual(conflict.path, LONG);
 	assert.strictEqual(conflict.total, 3);
 	assert.deepStrictEqual(conflict.regions.map((r) => r.index), rejected, 'same hunks as Git');
-	assert.strictEqual(res.applied.length, 0, 'unlike --reject, nothing was written');
+	assert.strictEqual(fs.readFileSync(path.join(dir, LONG), 'utf8'), LONG_BODY.replace('line 15\n', 'line 15 on trunk\n'), 'unlike --reject, nothing was written');
 });
 
 // Characterisation, not an invariant: `git apply` matches two ways, so an
