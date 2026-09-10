@@ -9,6 +9,16 @@
 // Grunt runs two levels below us (script-runner -> cmd.exe -> grunt.cmd -> node),
 // so an inherited NODE_OPTIONS preload is the only way to reach it.
 //
+// The same preload also settles which `tar` the build gets (#373). wordpress-develop's
+// tools/gutenberg/download.js extracts the Gutenberg artifact with a bare
+// `spawn('tar', ['-xzf', 'C:\…', …])`, and Git for Windows puts GNU tar ahead of
+// Windows's own bsdtar on PATH. GNU tar reads `C:` as a remote host and the build
+// dies at gutenberg:verify. A `tar.cmd` in the shim dir would have to run through
+// cmd.exe like any other script below, so the bare name is redirected here
+// instead, straight to %SystemRoot%\System32\tar.exe, no shell and no quoting.
+// It is the one tool the build spawns bare that a host install shadows with an
+// incompatible one.
+//
 // Deliberately self-contained (Node built-ins only): this file is copied into the
 // temp shim dir and required from there, because --require into a path inside
 // app.asar is not reliable under ELECTRON_RUN_AS_NODE.
@@ -32,12 +42,18 @@ function shimName(file) {
 	return base;
 }
 
+function hasDirectory(file) {
+	const name = String(file || '');
+	return name.includes('/') || name.includes('\\');
+}
+
 // Mirrors libuv's PATH/PATHEXT search closely enough to tell whether a bare
-// command name would land on a script the OS cannot exec directly.
+// command name would land on a script the OS cannot exec directly. Given a path
+// with a directory it just reports whether that file exists.
 function defaultLookup(file, env) {
 	const name = String(file || '');
 	if (!name) return null;
-	const hasDir = name.includes('/') || name.includes('\\');
+	const hasDir = hasDirectory(name);
 	const candidateDirs = hasDir
 		? [null]
 		: String(env.Path || env.PATH || '').split(';').filter(Boolean);
@@ -94,6 +110,17 @@ function resolveSpawnTarget({
 	}
 	if (name === 'npx' && npxCliPath) {
 		return { file: execPath, args: [npxCliPath, ...args], options: withNodeMode(options) };
+	}
+
+	// A bare `tar` goes to Windows's bsdtar, which understands drive letters. An
+	// explicit path is somebody's deliberate choice and is kept; a Windows with no
+	// System32\tar.exe (before 10 1803) falls through to the same handling as any
+	// other command.
+	if (name === 'tar' && !hasDirectory(file) && env.SystemRoot) {
+		const systemTar = lookup(path.win32.join(env.SystemRoot, 'System32', 'tar.exe'), env);
+		if (systemTar) {
+			return { file: systemTar, args: [...args], options };
+		}
 	}
 
 	// Fallback for every other .cmd/.bat shim (bin stubs of npm packages, etc.):
@@ -160,4 +187,4 @@ if (process.env.WPTK_SPAWN_PATCH === '1') {
 	});
 }
 
-module.exports = { resolveSpawnTarget, applyPatch, PATCH_MARKER };
+module.exports = { resolveSpawnTarget, applyPatch, defaultLookup, PATCH_MARKER };
