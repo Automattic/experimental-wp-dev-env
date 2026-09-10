@@ -58,13 +58,6 @@ function isActionableSite(sitePath, { sites, pending } = {}) {
 	return isRegisteredSite(sitePath, sites) || isRegisteredSite(sitePath, pending);
 }
 
-// A refused path is attacker-influenced by hypothesis, and it is about to be
-// written into the file contributors attach to bug reports, so it has to stay on
-// one line and it has to be bounded. safe-log.js is where both live, and why.
-function describeRefusedSite(sitePath) {
-	return describeRefused(sitePath);
-}
-
 // The `sites:delete` handler's body, kept out of main.js so both sides of the
 // guard can be tested without an Electron process. `remove` is the real tree
 // removal in the app, and only after it succeeds does `forget` drop the path
@@ -79,12 +72,12 @@ async function deleteRegisteredSite(sitePath, { sites, pending, forget, remove, 
 	// path not being in `sites` yet; making the folder openable mid-clone is what
 	// took that accident away.
 	if (isRegisteredSite(sitePath, pending)) {
-		if (typeof onRefused === 'function') onRefused(describeRefusedSite(sitePath));
+		if (typeof onRefused === 'function') onRefused(describeRefused(sitePath));
 		return false;
 	}
 
 	if (!isRegisteredSite(sitePath, sites)) {
-		if (typeof onRefused === 'function') onRefused(describeRefusedSite(sitePath));
+		if (typeof onRefused === 'function') onRefused(describeRefused(sitePath));
 		return false;
 	}
 
@@ -105,7 +98,7 @@ async function deleteRegisteredSite(sitePath, { sites, pending, forget, remove, 
 // a boolean, so the renderer can say what went wrong.
 async function revealRegisteredSite(sitePath, { sites, pending, reveal, onRefused } = {}) {
 	if (!isActionableSite(sitePath, { sites, pending })) {
-		if (typeof onRefused === 'function') onRefused(describeRefusedSite(sitePath));
+		if (typeof onRefused === 'function') onRefused(describeRefused(sitePath));
 		return { ok: false, reason: REVEAL_REASONS.UNREGISTERED_SITE };
 	}
 
@@ -124,7 +117,7 @@ async function revealRegisteredSite(sitePath, { sites, pending, reveal, onRefuse
 // cleared and the file was not.
 async function clearRegisteredSiteLog(sitePath, { sites, truncate, onRefused } = {}) {
 	if (!isRegisteredSite(sitePath, sites)) {
-		if (typeof onRefused === 'function') onRefused(describeRefusedSite(sitePath));
+		if (typeof onRefused === 'function') onRefused(describeRefused(sitePath));
 		return { ok: false, reason: 'unregistered-site' };
 	}
 
@@ -135,7 +128,6 @@ module.exports = {
 	REVEAL_REASONS,
 	isRegisteredSite,
 	isActionableSite,
-	describeRefusedSite,
 	revealRegisteredSite,
 	deleteRegisteredSite,
 	clearRegisteredSiteLog
