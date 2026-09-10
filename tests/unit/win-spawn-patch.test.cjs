@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-const { resolveSpawnTarget, applyPatch, PATCH_MARKER } = require('../../src/win-spawn-patch.js');
+const { resolveSpawnTarget, applyPatch, defaultLookup, PATCH_MARKER } = require('../../src/win-spawn-patch.js');
 
 // The Windows shim layout ensureNodeShimDir() writes, as the patch sees it.
 const WIN = {
@@ -9,16 +12,20 @@ const WIN = {
 	execPath: 'C:\\App\\App.exe',
 	npmCliPath: 'C:\\App\\resources\\app.asar\\node_modules\\npm\\bin\\npm-cli.js',
 	npxCliPath: 'C:\\App\\resources\\app.asar\\node_modules\\npm\\bin\\npx-cli.js',
-	env: { Path: 'C:\\shims;C:\\Windows', PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+	env: { Path: 'C:\\shims;C:\\Windows', PATHEXT: '.COM;.EXE;.BAT;.CMD', SystemRoot: 'C:\\Windows' },
 	lookup: (file) => {
 		const known = {
 			node: 'C:\\shims\\node.cmd',
 			grunt: 'C:\\site\\node_modules\\.bin\\grunt.cmd',
-			mysqld: 'C:\\tools\\mysqld.exe'
+			mysqld: 'C:\\tools\\mysqld.exe',
+			// Windows's own bsdtar, present since Windows 10 1803.
+			'c:\\windows\\system32\\tar.exe': 'C:\\Windows\\System32\\tar.exe'
 		};
 		return known[String(file).toLowerCase()] || null;
 	}
 };
+
+const SYSTEM_TAR = 'C:\\Windows\\System32\\tar.exe';
 
 // The exact call wordpress-develop's Gruntfile makes in gutenberg:verify.
 test('a bare `node` spawn is redirected to Electron in Node mode, without a shell', () => {
@@ -93,6 +100,74 @@ test('commands that Windows can exec directly are left alone', () => {
 	assert.equal(resolveSpawnTarget({ ...WIN, file: 'C:\\tools\\thing.exe', args: [] }), null);
 	// Unresolvable name: leave it be so the caller sees the real ENOENT.
 	assert.equal(resolveSpawnTarget({ ...WIN, file: 'nonesuch', args: [] }), null);
+});
+
+// The exact call wordpress-develop's tools/gutenberg/download.js makes (#373).
+// With Git for Windows on PATH a bare `tar` is GNU tar, which reads `C:` as a
+// remote host; Windows's own bsdtar in System32 handles the drive letter.
+test('a bare `tar` spawn is redirected to System32 bsdtar, args and options intact', () => {
+	const options = { stdio: ['ignore', 'inherit', 'inherit'] };
+	const target = resolveSpawnTarget({
+		...WIN,
+		file: 'tar',
+		args: ['-xzf', 'C:\\site\\.gutenberg\\artifact.tgz', '-C', 'C:\\site\\.gutenberg\\src'],
+		options
+	});
+
+	assert.equal(target.file, SYSTEM_TAR);
+	assert.deepEqual(target.args, ['-xzf', 'C:\\site\\.gutenberg\\artifact.tgz', '-C', 'C:\\site\\.gutenberg\\src']);
+	assert.deepEqual(target.options, options);
+	// Not Electron: no shell, and no Node-mode env rewrite either.
+	assert.ok(!target.options.shell);
+	assert.equal(target.options.env, undefined);
+
+	for (const file of ['tar.exe', 'TAR']) {
+		assert.equal(resolveSpawnTarget({ ...WIN, file, args: [] }).file, SYSTEM_TAR, file);
+	}
+});
+
+test('without System32\\tar.exe a bare `tar` gets the same handling as any other command', () => {
+	// A tar.exe found on PATH is left alone, so whatever tar the host has still
+	// runs: today's failure, but not a new one.
+	const gnu = resolveSpawnTarget({
+		...WIN,
+		lookup: (file) => (String(file).toLowerCase() === 'tar' ? 'C:\\Program Files\\Git\\usr\\bin\\tar.exe' : null),
+		file: 'tar',
+		args: ['-xzf', 'a.tgz']
+	});
+	assert.equal(gnu, null);
+
+	// A tar.cmd on PATH still reaches the shell fallback; the tar branch must not
+	// swallow the call on its way there.
+	const script = resolveSpawnTarget({
+		...WIN,
+		lookup: (file) => (String(file).toLowerCase() === 'tar' ? 'C:\\tools\\tar.cmd' : null),
+		file: 'tar',
+		args: ['-xzf', 'a.tgz']
+	});
+	assert.equal(script.options.shell, true);
+	assert.equal(script.file, '"C:\\tools\\tar.cmd"');
+
+	assert.equal(resolveSpawnTarget({ ...WIN, lookup: () => null, file: 'tar', args: [] }), null);
+});
+
+// The tar branch hands defaultLookup a full path, so its job there is plain
+// existence, not a PATH search. Pinned on a real file: the other tar tests all
+// inject lookup, and this is the one thing the production path relies on.
+test('defaultLookup with a path that has a directory reports whether that file exists', (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wptk-tar-lookup-'));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const present = path.join(dir, 'tar.exe');
+	fs.writeFileSync(present, '');
+
+	const env = { Path: 'C:\\somewhere-else', PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+	assert.equal(defaultLookup(present, env), present);
+	assert.equal(defaultLookup(path.join(dir, 'missing.exe'), env), null);
+});
+
+test('an explicit path to some other tar is not rewritten', () => {
+	const gitTar = 'C:\\Program Files\\Git\\usr\\bin\\tar.exe';
+	assert.equal(resolveSpawnTarget({ ...WIN, file: gitTar, args: ['-xzf', 'a.tgz'] }), null);
 });
 
 test('a call that already asked for a shell is left alone', () => {
