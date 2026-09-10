@@ -1798,9 +1798,12 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   useEffect(() => {
     if (!isActive) return undefined;
     refreshDirty();
-    window.addEventListener('focus', refreshDirty);
-    return () => window.removeEventListener('focus', refreshDirty);
-  }, [isActive, refreshDirty]);
+    // The status too (#352): a merge started outside the app ends outside
+    // it, and returning focus is when the banner can have become stale.
+    const onFocus = () => { refreshDirty(); loadStatus().catch(() => {}); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [isActive, refreshDirty, loadStatus]);
 
   // Linking and unlinking are the same write (#109): an empty ref clears the
   // association, so Unlink needs no second channel. Resuming a ticket that

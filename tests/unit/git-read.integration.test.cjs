@@ -428,6 +428,54 @@ test('mergeInProgress: finishing a rebase or a cherry-pick from a terminal ends 
 	assert.equal(inGitDir(picking, 'CHERRY_PICK_HEAD'), false);
 });
 
+test('mergeInProgress: a conflicting revert is its own kind, until it is continued or aborted (#352)', async (t) => {
+	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
+	// Reverting the commit that wrote "ours" conflicts once a later commit
+	// touched the same line.
+	const ours = git(['rev-parse', 'HEAD'], dir).stdout;
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // later\n');
+	commitAll(dir, 'later');
+	assert.equal(git([...ID, 'revert', '--no-edit', ours], dir).status, 1);
+	assert.equal(inGitDir(dir, 'REVERT_HEAD'), true);
+	assert.deepEqual(await read.mergeInProgress(dir, { platform: 'darwin' }), { kind: 'revert', paths: ['src/wp-login.php'] });
+
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // login\n');
+	assert.equal(git(['add', 'src/wp-login.php'], dir).status, 0);
+	assert.deepEqual(await read.mergeInProgress(dir, { platform: 'darwin' }), { kind: 'revert', paths: [] }, 'staged but not continued');
+
+	assert.equal(git(['revert', '--abort'], dir).status, 0);
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null);
+	assert.equal(git([...ID, 'revert', '--no-edit', ours], dir).status, 1);
+	fs.writeFileSync(path.join(dir, 'src', 'wp-login.php'), '<?php // login\n');
+	assert.equal(git(['add', 'src/wp-login.php'], dir).status, 0);
+	assert.equal(git([...ID, '-c', 'core.editor=true', 'revert', '--continue'], dir).status, 0);
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null, 'continued to the end');
+});
+
+test('mergeInProgress: in a linked worktree, where .git is a file, the markers are still found (#352)', async (t) => {
+	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
+	// A sibling of the fixture, not inside it: removed as a directory of its
+	// own, since the fixture's own cleanup runs first and takes the
+	// repository the worktree belongs to with it.
+	const worktree = `${dir}-linked`;
+	t.after(() => removeRepo(worktree));
+	assert.equal(git(['worktree', 'add', '-q', '--detach', worktree, 'trunk'], dir).status, 0);
+	assert.equal(fs.statSync(path.join(worktree, '.git')).isFile(), true);
+	assert.equal(await read.mergeInProgress(worktree, { platform: 'darwin' }), null);
+
+	assert.equal(git([...ID, 'merge', 'mentor/fix'], worktree).status, 1);
+	assert.deepEqual(await read.mergeInProgress(worktree, { platform: 'darwin' }), { kind: 'merge', paths: ['src/wp-login.php'] });
+	// Resolved and staged: nothing unmerged is left to name, and the head
+	// file is the only evidence, which lives under the main repository.
+	fs.writeFileSync(path.join(worktree, 'src', 'wp-login.php'), '<?php // both\n');
+	assert.equal(git(['add', 'src/wp-login.php'], worktree).status, 0);
+	assert.equal(fs.existsSync(path.join(dir, '.git', 'worktrees', path.basename(worktree), 'MERGE_HEAD')), true);
+	assert.deepEqual(await read.mergeInProgress(worktree, { platform: 'darwin' }), { kind: 'merge', paths: [] });
+	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null, 'the main checkout is not in that merge');
+	assert.equal(git(['merge', '--abort'], worktree).status, 0);
+	assert.equal(await read.mergeInProgress(worktree, { platform: 'darwin' }), null);
+});
+
 test('CHARACTERISATION: the forced checkout every app write runs erases a merge in progress without a word, which is why the block exists (#352)', async (t) => {
 	const { checkoutBranch } = require('../../src/git-write.cjs');
 	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });

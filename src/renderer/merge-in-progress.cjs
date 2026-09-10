@@ -22,7 +22,7 @@ const KINDS = {
 	rebase: { name: 'A rebase', resolve: 'resolve the files, then git add them and run git rebase --continue', finish: 'git rebase --continue', abandon: 'git rebase --abort' },
 	'cherry-pick': { name: 'A cherry-pick', resolve: 'resolve the files, then git add them and run git cherry-pick --continue', finish: 'git cherry-pick --continue', abandon: 'git cherry-pick --abort' },
 	revert: { name: 'A revert', resolve: 'resolve the files, then git add them and run git revert --continue', finish: 'git revert --continue', abandon: 'git revert --abort' },
-	apply: { name: 'A three-way patch apply', resolve: 'resolve the files, then git add them', finish: 'git add the files', abandon: 'git restore --staged --worktree -- <the files>' }
+	apply: { name: 'A three-way patch apply', resolve: 'resolve the files, then git add them', finish: 'git add the files', abandon: 'git restore --staged --worktree -- <every file the patch touched, not only the ones in conflict>' }
 };
 
 const LISTED = 5;

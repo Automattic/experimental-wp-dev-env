@@ -427,7 +427,13 @@ async function mergeInProgress(dir, { platform = process.platform, run = runGit 
 	const win = await windowsArgs(dir, { platform, run });
 	const { stdout } = await run([...win, 'status', '--porcelain=v2', '-z', '--untracked-files=no', '--no-renames'], { cwd: dir });
 	const paths = parseUnmergedZ(stdout);
-	const marker = IN_PROGRESS_MARKERS.find(([, name]) => fs.existsSync(path.join(dir, '.git', name)));
+	// Where each marker lives is Git's to say: in a linked worktree `.git`
+	// is a file and the markers sit under the main repository's
+	// `worktrees/<name>/`. One `rev-parse` answers for all of them, relative
+	// to `dir` in the common case and absolute in a worktree.
+	const located = await run(['rev-parse', ...IN_PROGRESS_MARKERS.flatMap(([, name]) => ['--git-path', name])], { cwd: dir });
+	const lines = located.stdout.toString('utf8').split('\n');
+	const marker = IN_PROGRESS_MARKERS.find((_, i) => lines[i] && fs.existsSync(path.resolve(dir, lines[i])));
 	if (!marker && paths.length === 0) return null;
 	return { kind: marker ? marker[0] : 'apply', paths };
 }
