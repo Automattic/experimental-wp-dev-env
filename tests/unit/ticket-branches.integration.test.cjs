@@ -659,6 +659,7 @@ test('rebaseOntoTrunk refuses a conflict with the paths and moves nothing (issue
 	await assert.rejects(rebaseOntoTrunk(dir, ref, { baseOid }), (e) => {
 		assert.equal(e.code, 'rebase-conflict');
 		assert.deepEqual(e.conflicts, ['wp-login.php']);
+		assert.deepEqual(e.kinds, { 'wp-login.php': 'content' }, 'and which kind of conflict (#351)');
 		return true;
 	});
 

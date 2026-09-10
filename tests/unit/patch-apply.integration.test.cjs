@@ -8,7 +8,7 @@ const path = require('path');
 const JsDiff = require('diff');
 const { applyPatchToDir, rollback, snapshotFiles, diagnoseHunks } = require('../../src/patch-apply');
 const { parsePatchFiles } = require('../../src/patch-plan.cjs');
-const { gitOk, initRepo, commitFiles, tempDir } = require('./helpers/git.cjs');
+const { git, gitOk, initRepo, commitFiles, tempDir, removeRepo } = require('./helpers/git.cjs');
 
 // A real on-disk repo, shaped the way the app's clone shapes one: the applier
 // hands the patch to the bundled Git, which wants a repository to apply into
@@ -972,4 +972,77 @@ test('applyPatchToDir: a failing reverse reports which regions were edited over 
 	assert.strictEqual(res.conflicts[0].path, FOO);
 	assert.strictEqual(res.conflicts[0].total, 1);
 	assert.strictEqual(res.conflicts[0].regions.length, 1);
+});
+
+// #351's acceptance bar for the patch flow. `git apply` decides, so the
+// files and the hunks the app names have to be the ones Git names: the
+// region breakdown is derived by jsdiff, which is a second opinion on Git's
+// verdict and could in principle disagree with it. `--reject` is the one
+// form of `git apply` that reports per hunk, so it is the reference.
+test('applyPatchToDir: the regions it names are the hunks git apply --reject rejects (#351)', async (t) => {
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
+	// Trunk moved under the middle region only; the fixture commits it so a
+	// worktree can be added at the same tree for Git's own run.
+	fs.writeFileSync(path.join(dir, LONG), LONG_BODY.replace('line 15\n', 'line 15 on trunk\n'));
+	commitFiles(dir, [LONG], 'trunk moved');
+	const worktree = path.join(dir, '..', `${path.basename(dir)}-reject`);
+	gitOk(['worktree', 'add', '-q', '--detach', worktree, 'HEAD'], dir);
+	// The fixture's own cleanup runs first and takes the repository with it,
+	// so the worktree is removed as a directory (read-only objects included,
+	// #381), not through Git.
+	t.after(() => removeRepo(worktree));
+	const patchFile = path.join(dir, '..', `${path.basename(dir)}.patch`);
+	fs.writeFileSync(patchFile, LONG_PATCH);
+	t.after(() => fs.rmSync(patchFile, { force: true }));
+
+	const reject = git(['apply', '--reject', '-v', patchFile], worktree);
+	assert.strictEqual(reject.status, 1, reject.stderr);
+	const rejected = [...reject.stderr.matchAll(/Rejected hunk #(\d+)\./g)].map((m) => Number(m[1]) - 1);
+	assert.deepStrictEqual(rejected, [1], 'the fixture rejects the middle hunk and nothing else');
+
+	const res = await applyPatchToDir({ dir, patchText: LONG_PATCH });
+	assert.strictEqual(res.ok, false);
+	assert.strictEqual(res.failures.length, 1);
+	const [conflict] = res.conflicts;
+	assert.strictEqual(conflict.path, LONG);
+	assert.strictEqual(conflict.total, 3);
+	assert.deepStrictEqual(conflict.regions.map((r) => r.index), rejected, 'same hunks as Git');
+	assert.strictEqual(res.applied.length, 0, 'unlike --reject, nothing was written');
+});
+
+// Characterisation, not an invariant: `git apply` matches two ways, so an
+// edit on a neighbouring line (inside the hunk's three lines of context)
+// fails a patch that `git merge` would take cleanly. The app agrees with
+// `git apply --check` here, and disagrees with GitHub. That is the part of
+// #351 still open, and it changes with the engine, not with this test.
+test('applyPatchToDir: a neighbouring edit is refused the way git apply refuses it, though a merge would not (#351)', async (t) => {
+	const dir = makeRepo(t, { [LONG]: LONG_BODY });
+	// The patch changes line 15; trunk changed line 13, within its context.
+	fs.writeFileSync(path.join(dir, LONG), LONG_BODY.replace('line 13\n', 'line 13 on trunk\n'));
+	commitFiles(dir, [LONG], 'trunk moved');
+	const patch = `diff --git a/${LONG} b/${LONG}
+--- a/${LONG}
++++ b/${LONG}
+@@ -12,7 +12,7 @@
+ line 12
+ line 13
+ line 14
+-line 15
++LINE FIFTEEN
+ line 16
+ line 17
+ line 18
+`;
+	const patchFile = path.join(dir, '..', `${path.basename(dir)}.patch`);
+	fs.writeFileSync(patchFile, patch);
+	t.after(() => fs.rmSync(patchFile, { force: true }));
+
+	const check = git(['apply', '--check', patchFile], dir);
+	assert.strictEqual(check.status, 1, 'git apply refuses the neighbouring edit');
+	assert.match(check.stderr, /patch does not apply/);
+
+	const res = await applyPatchToDir({ dir, patchText: patch });
+	assert.strictEqual(res.ok, false, 'and so does the app');
+	assert.strictEqual(res.conflicts[0].regions[0].status, 'moved');
+	assert.strictEqual(fs.readFileSync(path.join(dir, LONG), 'utf8'), LONG_BODY.replace('line 13\n', 'line 13 on trunk\n'), 'nothing written');
 });

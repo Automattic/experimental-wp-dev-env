@@ -445,13 +445,16 @@ async function rebaseOntoTrunk(dir, ref, { baseOid, author = WIP_AUTHOR, onProgr
 		// from the new trunk.
 		oid = trunkTip;
 	} else {
-		const { tree, conflicted, conflicts } = await mergeTree(dir, { base: baseOid, ours: trunkTip, theirs: wip });
+		const { tree, conflicted, conflicts, kinds } = await mergeTree(dir, { base: baseOid, ours: trunkTip, theirs: wip });
 		if (conflicted) {
 			const error = new Error(conflicts.length
-				? `Trunk changed the same lines as this ticket's work in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}`
-				: 'Trunk changed the same lines as this ticket\'s work');
+				? `Trunk and this ticket's work disagree in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}`
+				: 'Trunk and this ticket\'s work disagree');
 			error.code = 'rebase-conflict';
 			error.conflicts = conflicts;
+			// Which way each file disagrees (`content`, `modify/delete`,
+			// `add/add`), so the refusal can say so (#351).
+			error.kinds = kinds;
 			throw error;
 		}
 		oid = await commitTree(dir, { tree, parent: trunkTip, message: WIP_MESSAGE, author });
