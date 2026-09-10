@@ -279,6 +279,8 @@ for (const shape of MERGE_SHAPES) {
 // (content, delete/modify, add/add), made by the bundled binary the way a
 // terminal would make them, then resolved or abandoned the same way.
 
+// `git merge` wants a committer identity before it starts, even one that
+// stops on a conflict; a Windows runner has none to auto-detect (exit 128).
 const ID = ['-c', 'user.name=T', '-c', 'user.email=t@example.com'];
 const commitAll = (dir, message) => {
 	assert.equal(git(['add', '-A'], dir).status, 0);
@@ -321,7 +323,7 @@ test('mergeInProgress: a merge left conflicted by a terminal is reported with it
 	});
 	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null, 'nothing in progress before the merge');
 
-	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1, 'the merge stops on conflicts');
+	assert.equal(git([...ID, 'merge', 'mentor/fix'], dir).status, 1, 'the merge stops on conflicts');
 	assert.equal(inGitDir(dir, 'MERGE_HEAD'), true);
 	assert.deepEqual(git(['ls-files', '-u'], dir).stdout.split('\n').map((line) => line.split('\t')[1]).sort(), [
 		'src/new.php', 'src/new.php', 'src/wp-login.php', 'src/wp-login.php', 'src/wp-login.php', 'with space.txt', 'with space.txt'
@@ -360,7 +362,7 @@ test('mergeInProgress: a directory that is not a repository is not a merge, and 
 
 test('mergeInProgress: `git merge --abort` ends it, and a clean tree with a loose edit is not one (#352)', async (t) => {
 	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
-	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1);
+	assert.equal(git([...ID, 'merge', 'mentor/fix'], dir).status, 1);
 	assert.notEqual(await read.mergeInProgress(dir, { platform: 'darwin' }), null);
 	assert.equal(git(['merge', '--abort'], dir).status, 0);
 	assert.equal(await read.mergeInProgress(dir, { platform: 'darwin' }), null);
@@ -429,7 +431,7 @@ test('mergeInProgress: finishing a rebase or a cherry-pick from a terminal ends 
 test('CHARACTERISATION: the forced checkout every app write runs erases a merge in progress without a word, which is why the block exists (#352)', async (t) => {
 	const { checkoutBranch } = require('../../src/git-write.cjs');
 	const dir = forkedRepo(t, { 'src/wp-login.php': { ours: '<?php // ours\n', theirs: '<?php // theirs\n' } });
-	assert.equal(git(['merge', 'mentor/fix'], dir).status, 1);
+	assert.equal(git([...ID, 'merge', 'mentor/fix'], dir).status, 1);
 	assert.match(fs.readFileSync(path.join(dir, 'src', 'wp-login.php'), 'utf8'), /^<<<<<<< /m, 'markers in the tree');
 
 	await checkoutBranch(dir, 'trunk', { platform: 'darwin' });

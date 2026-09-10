@@ -38,7 +38,9 @@ function leaveMergeHalfDone( dir ) {
 	gitOk( [ 'checkout', '-q', 'trunk' ], dir );
 	fs.writeFileSync( path.join( dir, LOGIN ), '<?php // trunk moved too\n' );
 	commitFiles( dir, [ LOGIN ], 'trunk moves' );
-	const merge = git( [ 'merge', 'mentor/fix' ], dir );
+	// `git merge` wants a committer identity before it starts, even when it
+	// will stop on a conflict; a Windows runner has none to auto-detect.
+	const merge = git( [ '-c', 'user.name=mentor', '-c', 'user.email=mentor@example.com', 'merge', 'mentor/fix' ], dir );
 	expect( merge.status ).toBe( 1 );
 	expect( mergeHead( dir ) ).toBe( true );
 }

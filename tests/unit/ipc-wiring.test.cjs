@@ -4999,7 +4999,9 @@ test('a discard on a real checkout mid-merge leaves MERGE_HEAD, the unmerged ent
 	fs.writeFileSync(path.join(dir, workFile), '<?php // login\n// the mentor\'s fix\n');
 	commitFiles(dir, [workFile], 'mentor');
 	gitOk(['checkout', '-q', 'ticket/62281'], dir);
-	assert.equal(bin(['merge', 'mentor/fix'], dir).status, 1, 'the merge stops on the conflict');
+	// The identity `git merge` insists on before it starts, conflict or not.
+	const mentor = ['-c', 'user.name=mentor', '-c', 'user.email=mentor@example.com'];
+	assert.equal(bin([...mentor, 'merge', 'mentor/fix'], dir).status, 1, 'the merge stops on the conflict');
 	const before = statusScan(dir);
 	assert.match(before, /^u UU /m);
 	const main = parkedTicketMain(dir, baseOid);
