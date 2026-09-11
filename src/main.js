@@ -1359,7 +1359,25 @@ async function appliedPatchSubmissionRefusal(sitePath) {
 }
 
 async function writeWorkMeta(sitePath, patch) {
-    const { ref, meta } = await activeBranch(sitePath);
+    const { ref } = await activeBranch(sitePath);
+    return writeWorkMetaOn(sitePath, ref, patch);
+}
+
+/**
+ * The same write, against a branch named rather than read from HEAD.
+ *
+ * Every caller but one wants the branch that is checked out. The trunk update
+ * is the exception: it parks the ticket before it writes, so by then HEAD says
+ * trunk while the work the flag describes is on the branch it is about to
+ * return to (#419).
+ *
+ * @param {string} sitePath
+ * @param {string} ref
+ * @param {Object} patch
+ */
+async function writeWorkMetaOn(sitePath, ref, patch) {
+    const m = await readSiteMeta(sitePath);
+    const meta = (m.branches || {})[ref] || null;
     if (ref === TRUNK || !meta) return mergeSiteMeta(sitePath, patch);
     return mergeBranchMeta(sitePath, ref, patch);
 }
@@ -1591,10 +1609,22 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
             // HEAD has moved but install/build have not run yet: persist the
             // incomplete flag now so the state survives a crash or quit
             // mid-chain; the renderer clears it after a successful build.
-            await writeWorkMeta(sitePath, {
+            //
+            // On `branchBefore` rather than on HEAD, which the park has already
+            // moved to trunk: the build the renderer runs next ends after the
+            // return below, so it clears the flag on the ticket branch. Writing
+            // it where HEAD is now put it at site level, where nothing cleared
+            // it and it surfaced as a false "Update incomplete" banner the next
+            // time the contributor was on trunk (#419). Same for the applied
+            // patch: the reset took it off the tree the ticket comes back to.
+            await writeWorkMetaOn(sitePath, branchBefore, {
                 appliedPatch: null,
                 ...(result.upToDate ? {} : { updateIncomplete: true })
             });
+            // The copy earlier versions left behind, cleared once so a site that
+            // already carries the false banner is not stuck with it until some
+            // later update happens to run from trunk.
+            if (branchBefore !== TRUNK) await mergeSiteMeta(sitePath, { updateIncomplete: false });
 
             // Put the contributor back where they were. Without this the site
             // sits on trunk while the panel still names the ticket, every patch

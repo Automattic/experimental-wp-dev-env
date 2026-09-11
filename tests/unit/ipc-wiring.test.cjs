@@ -2754,8 +2754,12 @@ test('git:list-ticket-patches returns no-ticket without calling github-prs when 
 // names the ticket means every patch comes out empty and the only way back to
 // the work is to unlink and re-link.
 test('git:update-trunk parks the ticket, updates, and returns to it (issue #108)', async () => {
-	const switchToBranch = spy(async () => ({ switched: true, parked: true }));
-	const currentBranchName = spy(async () => 'ticket/59234');
+	// The branch name follows the checkouts. A constant would hide the park from
+	// every read the handler makes between it and the return — which is how the
+	// site-level write of #419 went unseen here for as long as it did.
+	let head = 'ticket/59234';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
 	const updateToLatestTrunk = spy(async () => ({
 		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
 	}));
@@ -2793,7 +2797,91 @@ test('git:update-trunk parks the ticket, updates, and returns to it (issue #108)
 	assert.equal(meta.trunkOid, 'new');
 	// The incomplete flag describes the ticket's tree, not the site's.
 	assert.equal(meta.branches['ticket/59234'].updateIncomplete, true);
-	assert.equal(meta.updateIncomplete, undefined, 'it must not be written at site level any more');
+	// Site level holds no truth about it any more: what is there is the explicit
+	// clear of the copy earlier versions wrote, never a fresh `true` (#419).
+	assert.equal(meta.updateIncomplete, false, 'it must not be written at site level any more');
+});
+
+// #419: the flag that says the tree is newer than the built assets was written
+// wherever HEAD happened to be, and the park has already moved HEAD to trunk by
+// then — so it landed at site level, while the build that follows cleared it on
+// the ticket branch. Nothing ever cleared the site-level copy, and it surfaced
+// as a red "Update incomplete" banner the moment the contributor came back to
+// trunk, minutes after the build that succeeded.
+//
+// The stub that matters here is `currentBranchName`: it follows the checkouts
+// instead of answering a constant, which is the only way this test can see the
+// park at all.
+test('git:update-trunk leaves no incomplete flag on trunk after the build finishes (issue #419)', async () => {
+	let head = 'ticket/60002';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: {
+			'/sites/wp': {
+				tracTicket: 60002,
+				currentBranch: 'ticket/60002',
+				branches: { 'ticket/60002': { tracTicket: 60002, baseOid: 'abc' } }
+			}
+		}
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	const done = await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+	assert.equal(done.ok, true);
+	assert.equal(head, 'ticket/60002', 'the update ends back on the ticket');
+
+	// What the renderer does when the build that follows the update succeeds.
+	await main.invoke('sites:mark-update-complete', '/sites/wp');
+	// And then the contributor goes back to trunk — Unlink finishes there too.
+	await main.invoke('branches:switch', '/sites/wp', 'trunk');
+
+	const status = await main.invoke('site:status', '/sites/wp');
+	assert.equal(status.updateIncomplete, false, 'the build ran and succeeded; nothing is incomplete');
+});
+
+// The other half of #419's correction: an update started from trunk has no
+// branch to write to, and its flag has to stay where `site:status` reads it on
+// trunk. Naming the branch explicitly must not have moved that.
+test('git:update-trunk still records the incomplete flag at site level with no ticket linked (issue #419)', async () => {
+	const currentBranchName = spy(async () => 'trunk');
+	const switchToBranch = spy(async () => ({ switched: true }));
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { branches: {}, currentBranch: 'trunk' } }
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	assert.deepEqual(switchToBranch.calls, [], 'nothing to park');
+	assert.equal(settings.values.siteMeta['/sites/wp'].updateIncomplete, true);
+	assert.equal((await main.invoke('site:status', '/sites/wp')).updateIncomplete, true);
 });
 
 test('git:update-trunk says where the work went when the update fails (issue #108)', async () => {
