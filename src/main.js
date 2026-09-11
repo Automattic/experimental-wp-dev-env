@@ -1111,6 +1111,15 @@ async function migrateSiteToBranches(sitePath) {
         // with the branch point the checkout it made is on (#172).
         return changeSiteMeta(sitePath, (now) => (now.branches ? now : { ...now, ...migrated }));
     } catch (e) {
+        // Losing the race is not failing. The winner created the branch, so
+        // `startTicketBranch` threw `branch-exists` here rather than falling
+        // through to the guard above, and the record on disk is already the
+        // migrated one. Handing back the read from the top of this function
+        // would tell every caller the site has no branches at all, and
+        // `branches:rebase` would refuse a ticket whose base is on record as
+        // having none.
+        const current = await readSiteMeta(sitePath);
+        if (current.branches) return current;
         // A site that cannot be branched right now — directory on a volume that
         // is not mounted, a clone that never finished — keeps working exactly as
         // it did before. Nothing is persisted, so the next attempt retries:
@@ -2234,23 +2243,23 @@ ipcMain.handle('wordpress:setup', async (event, destDir, options = {}) => {
 		if (!sites.includes(siteDir)) {
 			sites.push(siteDir);
 			s.set('sites', sites);
-			const meta = s.get('siteMeta');
 			const siteLabel = typeof options.siteLabel === 'string' && options.siteLabel.trim().length
 				? options.siteLabel.trim()
 				: uniqueName;
-			const existingMeta = meta[siteDir] || {};
-			meta[siteDir] = {
-				...existingMeta,
+			// Read before the record is touched rather than in the middle of
+			// writing it: this is a Git spawn on the clone that just finished,
+			// and holding the whole site map across it would write back a map
+			// that predates whatever another flow stored in the meantime — the
+			// same read-await-write #172 is about, over every site at once.
+			let trunkInfo = null;
+			try { trunkInfo = await readTrunkInfo(siteDir); } catch {}
+			await changeSiteMeta(siteDir, (m) => ({
+				...m,
 				initialized: false,
-				createdAt: existingMeta.createdAt || new Date().toISOString(),
-				label: existingMeta.label || siteLabel
-			};
-			try {
-				const { trunkOid, trunkDate } = await readTrunkInfo(siteDir);
-				meta[siteDir].trunkOid = trunkOid;
-				meta[siteDir].trunkDate = trunkDate;
-			} catch {}
-			s.set('siteMeta', meta);
+				createdAt: m.createdAt || new Date().toISOString(),
+				label: m.label || siteLabel,
+				...(trunkInfo ? { trunkOid: trunkInfo.trunkOid, trunkDate: trunkInfo.trunkDate } : {})
+			}));
 		}
 		notify('download:status', { phase: 'done', target: siteDir, sitePath: siteDir });
 		return siteDir;
@@ -2418,7 +2427,6 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 		} finally {
 			progress.flush();
 		}
-		baseOid = ((await readSiteMeta(sitePath)).branches || {})[branchRef]?.baseOid || null;
 	} else {
 		// Starting a ticket from another ticket parks that one first; from trunk
 		// the loose edits ride along into the new branch (that is deliberate —
@@ -2467,7 +2475,13 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 
 	await mergeBranchMeta(sitePath, branchRef, {
 		tracTicket: parsed.id,
-		baseOid,
+		// Only when this flow is the one that created the branch. The
+		// existing-branch path used to read the recorded base and write it
+		// straight back, which rolled back a `branches:rebase` that moved it
+		// while the switch was running — the base is the one value a branch
+		// cannot recompute (#172), and a write is not the way to leave it
+		// alone.
+		...(baseOid === undefined ? {} : { baseOid }),
 		lastUsedAt: new Date().toISOString()
 	});
 	await mergeSiteMeta(sitePath, { tracTicket: parsed.id, currentBranch: branchRef });
