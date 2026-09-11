@@ -33,6 +33,7 @@ tests/
   e2e/
     journeys/      layer 4 — npm run test:e2e
     packaged/      layer 5 — npm run test:e2e:packaged, and it needs a build first
+    real-setup/    opt-in layer 4 — real network setup, manual workflow only
     helpers/       the app session fixture and the Git site builder; not tests either
 ```
 
@@ -90,6 +91,30 @@ npm run test:e2e:packaged
 `CSC_IDENTITY_AUTO_DISCOVERY=false` is mandatory on macOS — electron-builder signs during `--dir` without it — and harmless everywhere else. The test tells you if you forgot the build.
 
 Neither end-to-end command downloads a browser. The only thing they launch is the Electron already in the tree, which is why CI has no `playwright install` step. The one exception is the Inspector, and it is opt-in — see above.
+
+## Running a real setup on demand
+
+The **[Real WordPress setup](.github/workflows/real-setup.yml)** workflow is manual only: it never runs on a pull request, push or schedule, and is not a required PR check. Once the workflow exists on `trunk`, open **Actions → Real WordPress setup → Run workflow**, select the branch to test and choose macOS, Windows or both. Download the `playwright-real-setup-<platform>` artifact to read the HTML report and app log; failures also include the fixture's screenshot, settings and trace.
+
+This drives the source app through **Create site**, lets it clone the current `wordpress-develop` and automatically install dependencies and build, then starts the dev server and checks that PHP serves the WordPress login form over HTTP. Only the native folder chooser is answered by the harness; Git, npm, the build and the server are real. It uses a throwaway profile and site directory, closes the app and attempts to remove those directories afterwards. Forced cancellation can interrupt cleanup; hosted runners are disposable. It does not test the signed installer or the native folder dialog itself.
+
+Allow tens of minutes, network access and several GB of free disk. The test has a 45-minute limit, the job has a 60-minute limit including dependency installation, and there are no automatic retries. GitHub, npm or upstream WordPress changes can break a run without a Toolkit regression; inspect the failed step and logs before assigning a cause. No WordPress checkout or site dependency cache is reused between runs.
+
+To run locally, install this worktree's dependencies and run `npm run build:once`, then opt in explicitly:
+
+```sh
+# macOS / POSIX shell
+TOOLKIT_REAL_SETUP=1 npx --no-install playwright test --config tests/e2e/real-setup.config.js
+```
+
+```powershell
+# Windows PowerShell
+$env:TOOLKIT_REAL_SETUP = '1'
+npx --no-install playwright test --config tests/e2e/real-setup.config.js
+Remove-Item Env:TOOLKIT_REAL_SETUP
+```
+
+The separate config keeps this test out of both default Playwright projects and `npm test`; without the environment opt-in, even an explicit run of this config skips the network setup.
 
 ## Auditing an end-to-end test
 
