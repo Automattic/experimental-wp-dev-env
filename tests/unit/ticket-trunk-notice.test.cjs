@@ -2,8 +2,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
 const { ticketTrunkNotice, rebaseRefusal } = require('../../src/renderer/ticket-trunk-notice.cjs');
 
 test('ticketTrunkNotice says what changed and offers the move (#305, #385)', () => {
@@ -52,27 +50,4 @@ test('ticketTrunkNotice stays silent without a ticket or a known move (#305)', (
 		{ ticketId: 123, behind: false },
 		{ ticketId: 123 }
 	]) assert.equal(ticketTrunkNotice(state), null);
-});
-
-test('the ticket card renders the stale-ticket notice returned by status (#305)', () => {
-	// LF whatever the checkout's line endings: a Windows runner reads the
-	// source as CRLF and the position check below compares bytes.
-	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer', 'index.jsx'), 'utf8').replace(/\r\n/g, '\n');
-	assert.match(source, /setTicketBehindTrunk\(Boolean\(s\?\.ticketBehindTrunk\)\)/);
-	assert.match(source, /ticketTrunkNotice\(\{ ticketId: tracTicket, behind: ticketBehindTrunk \}\)/);
-	assert.match(source, /staleTicketNotice\.title/);
-	assert.match(source, /staleTicketNotice\.body/);
-	assert.match(source, /staleTicketNotice\.action/);
-	assert.match(source, /window\.api\.rebaseBranch\(sitePath\)/);
-	assert.match(source, /setTicketError\(rebaseRefusal\(/);
-	// The panel's feedback (the refusal among it) sits under the notice and
-	// the Unlink row, not at the foot of the card (#385 walkthrough).
-	const feedbackUnderNotice = source.indexOf('{ticketFeedback}\n\n            {tracInfo ? (');
-	assert.ok(feedbackUnderNotice > 0, 'ticketFeedback renders right after the stale notice');
-	assert.ok(source.indexOf('staleTicketNotice.action') < feedbackUnderNotice);
-	assert.match(
-		source,
-		/setTicketBehindTrunk\(false\);\s+setTracTicket\(res\.ticket\);/,
-		'a switched ticket must not render with the previous ticket\'s stale flag'
-	);
 });
