@@ -35,6 +35,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const {
 	git: bin,
 	gitOk,
@@ -3084,6 +3085,93 @@ test('git:update-trunk keeps the applied-patch record of a branch with no meta o
 	const status = await main.invoke('site:status', '/sites/wp');
 	assert.equal(status.appliedPatch.label, 'PR #8913', 'the patch is back on disk, so the Revert stays offered');
 	assert.equal(status.appliedPatch.revertable, true, 'and the text that reverses it was not dropped');
+});
+
+// #172: every write to a site's metadata is a read of the whole record, one
+// change, and a write of the whole record back. Two writes that overlap lose
+// one of the two changes, and since #108 one of the values stored this way is
+// a branch's recorded trunk base — written once when the branch starts, and
+// the base every patch for that ticket is measured against. Lose it and the
+// patch is generated against the wrong trunk: not empty, not refused, wrong.
+//
+// The overlap the issue names is a ticket started while a trunk update is
+// finishing. The update's last writes put the incomplete flag on the branch it
+// returns to; the link records the new branch's base. Whichever of the
+// update's store accesses the link lands in, the base must be there afterwards.
+//
+// So the link is staged inside each store access the finishing update makes,
+// one run per access: the update is held at that access until the link has
+// run to completion, and then carries on. A test that picked one access by
+// number would test the count, and the count is an implementation detail.
+// Access one is counted from the moment the update's git work is done, which
+// is where "finishing" starts. `AsyncLocalStorage` tells the two flows apart
+// at the store, since both reach it through the same stubbed `getStore`.
+test('a ticket started while a trunk update is finishing keeps its recorded base (issue #172)', async (t) => {
+	const flows = new AsyncLocalStorage();
+
+	// Runs the update and lands the link inside the update's `holdAt`-th store
+	// access; `Infinity` runs the update alone and reports how many there are.
+	async function run(holdAt) {
+		let head = 'ticket/59234';
+		const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+		const currentBranchName = spy(async () => head);
+		const startTicketBranch = spy(async () => ({ ref: 'ticket/60002', baseOid: 'fresh', ticketId: 60002 }));
+		let finishing = false;
+		const updateToLatestTrunk = spy(async () => {
+			finishing = true;
+			return { upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z' };
+		});
+		const settings = fakeSettingsStore({
+			sites: ['/sites/wp'],
+			siteMeta: {
+				'/sites/wp': {
+					tracTicket: 59234,
+					currentBranch: 'ticket/59234',
+					branches: { 'ticket/59234': { tracTicket: 59234, baseOid: 'abc' } }
+				}
+			}
+		});
+		const { getStore: storeOf } = settings.stubs['./settings-store'];
+		let accesses = 0;
+		let link = null;
+		const getStore = async () => {
+			if (flows.getStore() === 'update' && finishing) {
+				accesses += 1;
+				if (accesses === holdAt) {
+					link = flows.run('link', () => main.invoke('sites:set-ticket', '/sites/wp', '60002'));
+					await link;
+				}
+			}
+			return storeOf();
+		};
+		const main = loadMain({
+			stubs: {
+				...silentLogging(),
+				'./settings-store': { getStore },
+				'./trunk-update': { updateToLatestTrunk },
+				'./ticket-branches': { switchToBranch, currentBranchName, startTicketBranch, listTicketBranches: async () => [], countChangesAgainst: async () => 0 }
+			}
+		});
+
+		const event = createIpcEvent();
+		const { updateId } = await flows.run('update', () => main.invokeWith('git:update-trunk', event, '/sites/wp'));
+		const done = await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+		assert.equal(done.ok, true);
+		return { accesses, link: link && await link, meta: settings.values.siteMeta['/sites/wp'] };
+	}
+
+	const { accesses } = await run(Infinity);
+	assert.ok(accesses >= 2, `the finishing update writes the store more than once (${accesses})`);
+
+	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
+		await t.test(`the link lands in store access ${holdAt} of ${accesses}`, async () => {
+			const { link, meta } = await run(holdAt);
+			assert.equal(link && link.ok, true, 'the link itself succeeded');
+			assert.equal(meta.branches['ticket/60002'] && meta.branches['ticket/60002'].baseOid, 'fresh',
+				'the new branch\'s base is what every patch for it is measured against');
+			assert.equal(meta.branches['ticket/59234'].baseOid, 'abc', 'and the other branch kept its own');
+		});
+	}
 });
 
 test('git:update-trunk says where the work went when the update fails (issue #108)', async () => {

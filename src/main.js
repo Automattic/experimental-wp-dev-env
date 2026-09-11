@@ -1018,11 +1018,33 @@ ipcMain.handle('github:open-pr', async (event, sitePath, options = {}) => {
 // --- Trunk update path (#94) --- git mechanics live in src/trunk-update.js;
 // these handlers only add IPC plumbing and electron-store writes.
 
-async function mergeSiteMeta(sitePath, patch) {
+/**
+ * The one way a site's record is written: read, change, write, with no `await`
+ * between the read and the write.
+ *
+ * The store's `get` and `set` are synchronous, so the event loop is what
+ * serialises writers, and it only does so while nothing yields in between. A
+ * writer that reads the record, awaits anything, and then writes what it read
+ * saves a snapshot that another writer may have moved on from, and the other
+ * writer's change is gone (#172). The value that made that matter is a
+ * branch's recorded base, the one thing a branch cannot recompute. So every
+ * change is expressed against the record as it is at the moment of the write,
+ * and the read happens here, after the store has been awaited.
+ *
+ * @param {string}                     sitePath
+ * @param {(record: Object) => Object} change   Given the current record, returns the record to store.
+ * @return {Promise<Object>} The record as written.
+ */
+async function changeSiteMeta(sitePath, change) {
     const s = await getStore();
     const meta = s.get('siteMeta') || {};
-    meta[sitePath] = { ...(meta[sitePath] || {}), ...patch };
+    meta[sitePath] = change(meta[sitePath] || {});
     s.set('siteMeta', meta);
+    return meta[sitePath];
+}
+
+async function mergeSiteMeta(sitePath, patch) {
+    await changeSiteMeta(sitePath, (m) => ({ ...m, ...patch }));
 }
 
 // --- Ticket branches (#108) --- git mechanics live in src/ticket-branches.js;
@@ -1058,9 +1080,7 @@ async function migrateSiteToBranches(sitePath) {
     // Nothing was being worked on, so there is no work to put on a branch. The
     // empty map is recorded so this does not re-run, and it costs no git I/O.
     if (!m.tracTicket) {
-        const migrated = { branches: {}, currentBranch: TRUNK };
-        await mergeSiteMeta(sitePath, migrated);
-        return { ...m, ...migrated };
+        return changeSiteMeta(sitePath, (now) => (now.branches ? now : { ...now, branches: {}, currentBranch: TRUNK }));
     }
 
     try {
@@ -1086,8 +1106,10 @@ async function migrateSiteToBranches(sitePath) {
             },
             currentBranch: ref
         };
-        await mergeSiteMeta(sitePath, migrated);
-        return { ...m, ...migrated };
+        // The git work above sits between this function's read and its write,
+        // so a migration that finished in the meantime wins: its map is the one
+        // with the branch point the checkout it made is on (#172).
+        return changeSiteMeta(sitePath, (now) => (now.branches ? now : { ...now, ...migrated }));
     } catch (e) {
         // A site that cannot be branched right now — directory on a volume that
         // is not mounted, a clone that never finished — keeps working exactly as
@@ -1400,11 +1422,16 @@ async function workMetaScope(sitePath, ref) {
     return (m.branches || {})[ref] ? ref : null;
 }
 
+// The `branches` map is replaced whole, so it is computed from the record at
+// the moment of the write, not from a read made a step earlier: the step in
+// between is exactly where a branch another flow had just started went missing
+// (#172).
 async function mergeBranchMeta(sitePath, ref, patch) {
-    const m = await readSiteMeta(sitePath);
-    const branches = { ...(m.branches || {}) };
-    branches[ref] = { ...(branches[ref] || {}), ...patch };
-    await mergeSiteMeta(sitePath, { branches });
+    await changeSiteMeta(sitePath, (m) => {
+        const branches = { ...(m.branches || {}) };
+        branches[ref] = { ...(branches[ref] || {}), ...patch };
+        return { ...m, branches };
+    });
 }
 
 /**
@@ -2547,13 +2574,11 @@ ipcMain.handle('branches:delete', async (_e, sitePath, targetRef) => withRegiste
 		if (merging) return merging;
 	}
 	await deleteTicketBranch(sitePath, targetRef, { onChild: trackGitChild(sitePath) });
-	const m = await readSiteMeta(sitePath);
-	const branches = { ...(m.branches || {}) };
-	delete branches[targetRef];
 	const wasActive = current === targetRef;
-	await mergeSiteMeta(sitePath, {
-		branches,
-		...(wasActive ? { currentBranch: TRUNK, tracTicket: null } : {})
+	await changeSiteMeta(sitePath, (m) => {
+		const branches = { ...(m.branches || {}) };
+		delete branches[targetRef];
+		return { ...m, branches, ...(wasActive ? { currentBranch: TRUNK, tracTicket: null } : {}) };
 	});
 	// `movedToTrunk` says the checkout itself changed, which `current` alone
 	// cannot: a delete made from trunk reports trunk either way, and the note
