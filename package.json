@@ -62,7 +62,10 @@
       "!node_modules/dugite/git/{mingw64,clangarm64}/bin/{gcmcore,GitHub,GitLab,MicroCom.Runtime,msalruntime,av_libglesv2}.dll",
       "!node_modules/dugite/git/{mingw64,clangarm64}/bin/*{SkiaSharp,HarfBuzzSharp}*.dll",
       "!node_modules/dugite/git/{mingw64,clangarm64}/doc{,/**/*}",
-      "!node_modules/dugite/git/{mingw64,clangarm64}/share/doc{,/**/*}"
+      "!node_modules/dugite/git/{mingw64,clangarm64}/share/doc{,/**/*}",
+      "!node_modules/fs-ext-extra-prebuilt/build/*.vcxproj*",
+      "!node_modules/fs-ext-extra-prebuilt/build/Release/fs_ext.{exp,iobj,ipdb,lib}",
+      "!node_modules/fs-ext-extra-prebuilt/build/Release/obj{,/**/*}"
     ],
     "asarUnpack": [
       "node_modules/dugite/git/**"

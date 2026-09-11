@@ -433,6 +433,63 @@ for ( const moduleName of REQUIRED_MODULES ) {
  * to. Resolved through src/git-binary.cjs inside the packaged main process,
  * exactly as a caller will once one exists. Offline, and it writes nothing.
  */
+/**
+ * The native file-lock module, loaded for real.
+ *
+ * The resolve loop above proves the package is reachable; it does not load
+ * the binary. This does, through the same `require` the PHP runtime uses.
+ * The module tries its prebuilt binaries first and, when none matches the
+ * running Electron, falls back to `build/Release/fs_ext.node` — the one file
+ * `electron-builder install-app-deps` compiles on the build machine. Both
+ * paths end here: if the fallback went missing, or was built against the
+ * wrong ABI, `flockSync` is not a function and nothing else in this suite
+ * would have noticed.
+ */
+test( 'the packaged app can load the native file-lock module', async () => {
+	const result = await electronApp.evaluate( ( { app } ) => {
+		const nodeRequire = process.mainModule ? process.mainModule.require : require;
+		const { createRequire } = nodeRequire( 'module' );
+		const { join } = nodeRequire( 'path' );
+		const req = createRequire( join( app.getAppPath(), 'package.json' ) );
+		try {
+			const fsExt = req( 'fs-ext-extra-prebuilt' );
+			return {
+				ok: typeof fsExt.flockSync === 'function',
+				source: typeof fsExt.getNativeModuleSource === 'function' ? fsExt.getNativeModuleSource() : 'unknown',
+				electron: process.versions.electron,
+			};
+		} catch ( error ) {
+			return { ok: false, error: String( error && error.message ) };
+		}
+	} );
+
+	expect( result, `native module did not load under Electron ${ result.electron }: ${ result.error }` )
+		.toHaveProperty( 'ok', true );
+	expect( [ 'prebuilt', 'local' ] ).toContain( result.source );
+} );
+
+/**
+ * The native module's build directory ships the binary and nothing else.
+ *
+ * On Windows, `install-app-deps` leaves MSVC's whole working set beside the
+ * `.node` it produced — `.iobj`, `.ipdb`, `.lib`, `.exp`, the `.vcxproj`
+ * pair and a tree of `.tlog` logs under `obj/` — and electron-builder's
+ * default excludes miss every one of them by an extension (`obj` is not
+ * `iobj`, `csproj` is not `vcxproj`). Three `!` rules in package.json trim
+ * them; this is where a rule that stops matching, or one that overreaches
+ * into the binary itself, shows up. macOS leaves only the binary behind, so
+ * the assertion is the same on both platforms and only Windows can fail it.
+ */
+test( 'the native module build directory carries only its binary', () => {
+	const release = path.join(
+		resourcesDirOf( findPackagedBinary() ),
+		'app.asar.unpacked', 'node_modules', 'fs-ext-extra-prebuilt', 'build', 'Release'
+	);
+	expect( fs.existsSync( release ), `${ release } is missing` ).toBe( true );
+
+	expect( fs.readdirSync( release ).sort() ).toEqual( [ 'fs_ext.node' ] );
+} );
+
 test( 'the packaged app can spawn the bundled Git', async () => {
 	const result = await electronApp.evaluate( ( { app } ) => {
 		const nodeRequire = process.mainModule ? process.mainModule.require : require;
