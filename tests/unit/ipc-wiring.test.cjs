@@ -35,6 +35,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const {
 	git: bin,
 	gitOk,
@@ -2829,6 +2830,285 @@ test('git:update-trunk parks the ticket, updates, and returns to it (issue #108)
 	assert.equal(meta.updateIncomplete, false, 'the live flag is the branch\'s, and this is the cleared copy');
 });
 
+// The same lost write, one scope up. `sites:set-ticket` used to read the
+// branch's recorded base on the existing-branch path and write it straight
+// back, with the store awaited in between — so a `branches:rebase` that landed
+// in that window had its new base overwritten by the one it had just replaced.
+// The ticket then measures every patch against a trunk its work is no longer
+// on, which is exactly the silent wrong patch #172 is about.
+//
+// Staged the same way as the test above: the link is held at each of its store
+// accesses while a rebase runs to completion inside it.
+test('linking a ticket does not roll back a rebase that lands while it switches (issue #172)', async (t) => {
+	const flows = new AsyncLocalStorage();
+
+	async function run(holdAt) {
+		// Following the checkout is what makes the switch visible to the rebase
+		// running inside it: with a constant here the link would find itself
+		// already on the branch and return before it ever reads the base.
+		let head = 'trunk';
+		const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true }; });
+		const currentBranchName = spy(async () => head);
+		const rebaseOntoTrunk = spy(async () => ({ to: 'rebased', from: 'old', rebased: true }));
+		const settings = fakeSettingsStore({
+			sites: ['/sites/wp'],
+			siteMeta: {
+				'/sites/wp': {
+					currentBranch: 'trunk',
+					branches: { 'ticket/61002': { tracTicket: 61002, baseOid: 'old' } }
+				}
+			}
+		});
+		const { getStore: storeOf } = settings.stubs['./settings-store'];
+		let accesses = 0;
+		let rebase = null;
+		const getStore = async () => {
+			if (flows.getStore() === 'link') {
+				accesses += 1;
+				if (accesses === holdAt) {
+					rebase = flows.run('rebase', () => main.invoke('branches:rebase', '/sites/wp')).catch((e) => e);
+					await Promise.race([
+						rebase,
+						new Promise((_r, reject) => setTimeout(
+							() => reject(new Error(`the rebase never finished inside store access ${holdAt}`)),
+							4000
+						).unref())
+					]);
+				}
+			}
+			return storeOf();
+		};
+		const main = loadMain({
+			stubs: {
+				...silentLogging(),
+				'./settings-store': { getStore },
+				'./ticket-branches': {
+					switchToBranch,
+					rebaseOntoTrunk,
+					currentBranchName,
+					listTicketBranches: async () => ['ticket/61002'],
+					countChangesAgainst: async () => 0
+				}
+			}
+		});
+
+		const link = await flows.run('link', () => main.invoke('sites:set-ticket', '/sites/wp', '61002'));
+		return { accesses, link, rebase: await rebase, meta: settings.values.siteMeta['/sites/wp'] };
+	}
+
+	const { accesses } = await run(Infinity);
+	assert.ok(accesses >= 1, 'the link reaches the store at all, or there is no window to stage');
+
+	let moved = 0;
+	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
+		await t.test(`the rebase lands in store access ${holdAt} of ${accesses}`, async () => {
+			const { link, rebase, meta } = await run(holdAt);
+			assert.equal(link.ok, true, 'the link itself succeeded');
+			// Held before the switch there is no ticket to rebase yet, so the
+			// rebase refuses and the base is simply the one already on record.
+			// Only the accesses after the switch can lose anything, and the
+			// count below is what insists some hold reached them.
+			if (rebase && rebase.ok) {
+				moved += 1;
+				assert.equal(meta.branches['ticket/61002'].baseOid, 'rebased',
+					'the base the rebase moved the branch to is the one every patch is measured against');
+			} else {
+				assert.equal(meta.branches['ticket/61002'].baseOid, 'old', 'nothing moved it, so nothing changed it');
+			}
+		});
+	}
+	assert.ok(moved >= 1, 'at least one hold has to be late enough for the rebase to run, or this proves nothing');
+});
+
+
+// The last writer of this shape, and the one that costs a contributor a patch
+// rather than a base. A rebase keeps the applied-patch record and drops only
+// its text, and it used to read that record, resolve the write scope (a Git
+// spawn), and then write back what it had read. A discard or an apply landing
+// in that window was replaced by the record from before it: "PR #8913 applied ·
+// Revert" over a tree the discard had just emptied, and a Revert that cannot
+// find its hunks.
+test('a rebase does not restore an applied-patch record a discard cleared while it ran (issue #172)', async (t) => {
+	const flows = new AsyncLocalStorage();
+
+	async function run(holdAt) {
+		const rebaseOntoTrunk = spy(async () => ({ to: 'new', from: 'old', rebased: true }));
+		const discardChanges = spy(async () => ({ discarded: true }));
+		const settings = fakeSettingsStore({
+			sites: ['/sites/wp'],
+			siteMeta: {
+				'/sites/wp': {
+					tracTicket: 61002,
+					currentBranch: 'ticket/61002',
+					branches: {
+						'ticket/61002': {
+							tracTicket: 61002,
+							baseOid: 'old',
+							appliedPatch: { label: 'PR #8913', appliedAt: '2026-01-01T00:00:00.000Z', files: ['a.php'], text: 'STORED' }
+						}
+					}
+				}
+			}
+		});
+		const { getStore: storeOf } = settings.stubs['./settings-store'];
+		let accesses = 0;
+		let discard = null;
+		const getStore = async () => {
+			if (flows.getStore() === 'rebase') {
+				accesses += 1;
+				if (accesses === holdAt) {
+					discard = flows.run('discard', () => main.invoke('git:discard-changes', '/sites/wp')).catch((e) => e);
+					await Promise.race([
+						discard,
+						new Promise((_r, reject) => setTimeout(
+							() => reject(new Error(`the discard never finished inside store access ${holdAt}`)),
+							4000
+						).unref())
+					]);
+				}
+			}
+			return storeOf();
+		};
+		const main = loadMain({
+			stubs: {
+				...silentLogging(),
+				'./settings-store': { getStore },
+				'./trunk-update': { discardChanges },
+				'./ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => 'ticket/61002' }
+			}
+		});
+
+		const rebase = await flows.run('rebase', () => main.invoke('branches:rebase', '/sites/wp'));
+		return { accesses, rebase, discard: await discard, meta: settings.values.siteMeta['/sites/wp'] };
+	}
+
+	const { accesses } = await run(Infinity);
+	assert.ok(accesses >= 1, 'the rebase reaches the store at all, or there is no window to stage');
+
+	let cleared = 0;
+	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
+		await t.test(`the discard lands in store access ${holdAt} of ${accesses}`, async () => {
+			const { rebase, discard, meta } = await run(holdAt);
+			assert.equal(rebase.ok, true, 'the rebase itself succeeded');
+			const entry = meta.branches['ticket/61002'];
+			assert.equal(entry.baseOid, 'new', 'the rebase still wrote its own record, so this run staged a real overlap');
+			if (discard && discard.ok) {
+				cleared += 1;
+				assert.equal(entry.appliedPatch, null,
+					'the discard emptied the tree, so nothing may put its record back');
+			} else {
+				// Refused before it wrote, so the record is the rebase's own:
+				// kept for the #328 ownership guard, with its text dropped.
+				assert.equal(entry.appliedPatch.label, 'PR #8913');
+				assert.equal(entry.appliedPatch.text, null);
+			}
+		});
+	}
+	assert.ok(cleared >= 1, 'some hold has to let the discard through, or this proves nothing');
+});
+
+// The migration to the #108 branch shape is the one write that cannot be a
+// single read-change-write: its git work (list the branches, create one) sits
+// between the read and the write, and the map it has built by then is a whole
+// map. Two flows entering it at once therefore race, and the loser's map is
+// built from a record that predates the winner's.
+//
+// `branches:rebase` is the flow here only because it migrates on its way in and
+// then reads what the migration returned, which is what makes both halves of
+// the correction observable from outside.
+function migratingMain(settings, ticketBranches) {
+	return loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./ticket-branches': { currentBranchName: async () => 'ticket/59234', ...ticketBranches }
+		}
+	});
+}
+
+test('a migration that finished first is not overwritten by one still doing its git work (issue #172)', async () => {
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		// A pre-#108 site: a ticket, and no `branches` map at all.
+		siteMeta: { '/sites/wp': { tracTicket: 59234 } }
+	});
+	let release;
+	const gate = new Promise((resolve) => { release = resolve; });
+	let calls = 0;
+	const main = migratingMain(settings, {
+		// The loser is held on its first call, after it has read the record and
+		// before it can write, and comes back to a branch the winner created
+		// while it waited. Holding on a flag the loser sets itself would make
+		// the loser the winner and there would be no race to test.
+		listTicketBranches: async () => {
+			calls += 1;
+			if (calls === 1) { await gate; return ['ticket/59234']; }
+			return [];
+		},
+		startTicketBranch: async () => ({ ref: 'ticket/59234', baseOid: 'winner', ticketId: 59234 }),
+		// Up to date, so it writes back the base it was handed: what stays in
+		// the store is what the migration recorded, which is the question here.
+		rebaseOntoTrunk: async (_dir, _ref, options) => ({ to: options.baseOid, from: options.baseOid, rebased: false })
+	});
+
+	// The loser starts first, so its read of the record sees no `branches`.
+	const loser = main.invoke('branches:rebase', '/sites/wp');
+	const winner = await main.invoke('branches:rebase', '/sites/wp');
+	release();
+	await loser;
+
+	assert.equal(winner.ok, true);
+	const entry = settings.values.siteMeta['/sites/wp'].branches['ticket/59234'];
+	// The loser saw the branch already on disk and would have recorded `null`
+	// for its base, which is the right answer for a branch this app did not
+	// create (#308) and the wrong one for a branch it created seconds earlier.
+	assert.equal(entry.baseOid, 'winner', 'the branch point of the checkout that actually happened');
+});
+
+test('a migration that lost the race still reports the record the winner wrote (issue #172)', async () => {
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: { '/sites/wp': { tracTicket: 59234 } }
+	});
+	let release;
+	const gate = new Promise((resolve) => { release = resolve; });
+	let calls = 0;
+	const rebaseOntoTrunk = spy(async (_dir, _ref, options) => ({ to: options.baseOid, from: options.baseOid, rebased: false }));
+	const main = migratingMain(settings, {
+		listTicketBranches: async () => [],
+		// The loser reached the real `startTicketBranch` first but the winner
+		// created the ref while it was working, so it comes back refused —
+		// which is what the real one does (`code: 'branch-exists'`), not a
+		// fall-through to the guard that compares records.
+		startTicketBranch: async () => {
+			calls += 1;
+			if (calls === 1) {
+				await gate;
+				const error = new Error('Already working on ticket #59234 in this site');
+				error.code = 'branch-exists';
+				throw error;
+			}
+			return { ref: 'ticket/59234', baseOid: 'winner', ticketId: 59234 };
+		},
+		rebaseOntoTrunk
+	});
+
+	const loser = main.invoke('branches:rebase', '/sites/wp');
+	const winner = await main.invoke('branches:rebase', '/sites/wp');
+	release();
+	const result = await loser;
+
+	assert.equal(winner.ok, true);
+	// The bug this pins: the catch handed back the read from the top of the
+	// migration, which has no `branches` key by definition, so the site looked
+	// unmigrated and its ticket looked baseless — "This ticket has no recorded
+	// starting point" for a branch whose base is on record.
+	assert.notEqual(result.code, 'no-base', 'the winner recorded a base, and the loser has to see it');
+	assert.equal(result.ok, true);
+	assert.equal(rebaseOntoTrunk.calls.length, 2);
+	assert.equal(rebaseOntoTrunk.calls[1][2].baseOid, 'winner');
+});
+
 // #419: the flag that says the tree is newer than the built assets was written
 // wherever HEAD happened to be, and the park has already moved HEAD to trunk by
 // then — so it landed at site level, while the build that follows cleared it on
@@ -3111,6 +3391,107 @@ test('git:update-trunk keeps the applied-patch record of a branch with no meta o
 	const status = await main.invoke('site:status', '/sites/wp');
 	assert.equal(status.appliedPatch.label, 'PR #8913', 'the patch is back on disk, so the Revert stays offered');
 	assert.equal(status.appliedPatch.revertable, true, 'and the text that reverses it was not dropped');
+});
+
+// #172: every write to a site's metadata is a read of the whole record, one
+// change, and a write of the whole record back. Two writes that overlap lose
+// one of the two changes, and since #108 one of the values stored this way is
+// a branch's recorded trunk base — written once when the branch starts, and
+// the base every patch for that ticket is measured against. Lose it and the
+// patch is generated against the wrong trunk: not empty, not refused, wrong.
+//
+// The overlap the issue names is a ticket started while a trunk update is
+// finishing. The update's last writes put the incomplete flag on the branch it
+// returns to; the link records the new branch's base. Whichever of the
+// update's store accesses the link lands in, the base must be there afterwards.
+//
+// So the link is staged inside each store access the finishing update makes,
+// one run per access: the update is held at that access until the link has
+// run to completion, and then carries on. A test that picked one access by
+// number would test the count, and the count is an implementation detail.
+// Access one is counted from the moment the update's git work is done, which
+// is where "finishing" starts. `AsyncLocalStorage` tells the two flows apart
+// at the store, since both reach it through the same stubbed `getStore`.
+test('a ticket started while a trunk update is finishing keeps its recorded base (issue #172)', async (t) => {
+	const flows = new AsyncLocalStorage();
+
+	// Runs the update and lands the link inside the update's `holdAt`-th store
+	// access; `Infinity` runs the update alone and reports how many there are.
+	async function run(holdAt) {
+		let head = 'ticket/59234';
+		const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+		const currentBranchName = spy(async () => head);
+		const startTicketBranch = spy(async () => ({ ref: 'ticket/60002', baseOid: 'fresh', ticketId: 60002 }));
+		let finishing = false;
+		const updateToLatestTrunk = spy(async () => {
+			finishing = true;
+			return { upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z' };
+		});
+		const settings = fakeSettingsStore({
+			sites: ['/sites/wp'],
+			siteMeta: {
+				'/sites/wp': {
+					tracTicket: 59234,
+					currentBranch: 'ticket/59234',
+					branches: { 'ticket/59234': { tracTicket: 59234, baseOid: 'abc' } }
+				}
+			}
+		});
+		const { getStore: storeOf } = settings.stubs['./settings-store'];
+		let accesses = 0;
+		let link = null;
+		const getStore = async () => {
+			if (flows.getStore() === 'update' && finishing) {
+				accesses += 1;
+				if (accesses === holdAt) {
+					link = flows.run('link', () => main.invoke('sites:set-ticket', '/sites/wp', '60002')).catch((e) => e);
+					// Bounded, because the obvious second fix for #172 is a
+					// mutex around the read-modify-write, and a mutex held
+					// across this access would have the update waiting for the
+					// link while the link waits for the lock. `node --test`
+					// sets no timeout, so an unbounded await there is a CI hang
+					// with no message rather than a test anyone can read.
+					await Promise.race([
+						link,
+						new Promise((_r, reject) => setTimeout(
+							() => reject(new Error(`the link never finished inside store access ${holdAt} — a fix that serialises with a lock held across the store would deadlock here`)),
+							4000
+						).unref())
+					]);
+				}
+			}
+			return storeOf();
+		};
+		const main = loadMain({
+			stubs: {
+				...silentLogging(),
+				'./settings-store': { getStore },
+				'./trunk-update': { updateToLatestTrunk },
+				'./ticket-branches': { switchToBranch, currentBranchName, startTicketBranch, listTicketBranches: async () => [], countChangesAgainst: async () => 0 }
+			}
+		});
+
+		const event = createIpcEvent();
+		const { updateId } = await flows.run('update', () => main.invokeWith('git:update-trunk', event, '/sites/wp'));
+		const done = await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+		assert.equal(done.ok, true);
+		return { accesses, link: await link, meta: settings.values.siteMeta['/sites/wp'] };
+	}
+
+	const { accesses } = await run(Infinity);
+	assert.ok(accesses >= 1, 'the finishing update reaches the store at all, or there is no window to stage');
+
+	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
+		await t.test(`the link lands in store access ${holdAt} of ${accesses}`, async () => {
+			const { link, meta } = await run(holdAt);
+			assert.equal(link && link.ok, true, 'the link itself succeeded');
+			assert.equal(meta.branches['ticket/59234'].updateIncomplete, true,
+				'the update still wrote its own record after the hold, so this run staged a real overlap');
+			assert.equal(meta.branches['ticket/60002'] && meta.branches['ticket/60002'].baseOid, 'fresh',
+				'the new branch\'s base is what every patch for it is measured against');
+			assert.equal(meta.branches['ticket/59234'].baseOid, 'abc', 'and the other branch kept its own');
+		});
+	}
 });
 
 test('git:update-trunk says where the work went when the update fails (issue #108)', async () => {
@@ -4487,6 +4868,41 @@ async function runSetup({ duringClone, cloneFails = false, existing = [], extraS
 	for (const { channel, payload } of event.sent) if (channel === 'download:status') seen.push(payload);
 	return { root, main, settings, inside, statuses: seen, ...settled };
 }
+
+// Registering a finished clone is the widest instance of the #172 shape: it
+// held the whole site map, not one record, across a Git spawn on the new
+// checkout — so a write to any *other* site that landed while the trunk info
+// was being read was written back out of existence. The clone runs under
+// `setupTracker` with the rest of the app live, so that window is reachable by
+// anything the contributor does next.
+test('registering a finished clone does not undo another site\'s write while it reads the trunk info (issue #172)', async () => {
+	let inner;
+	const { settings, siteDir } = await runSetup({
+		duringClone: async ({ main, settings: st }) => {
+			// A second site, of the kind a contributor already has.
+			st.values.sites.push('/sites/other');
+			st.values.siteMeta['/sites/other'] = { label: 'Other', initialized: true };
+			inner = main;
+			return null;
+		},
+		extraStubs: {
+			'./trunk-update': {
+				readTrunkInfo: async () => {
+					await inner.invoke('sites:set-label', '/sites/other', 'Renamed mid-clone');
+					return { trunkOid: 'abc', trunkDate: '2026-01-01' };
+				}
+			}
+		}
+	});
+
+	assert.equal(settings.values.siteMeta[siteDir].trunkOid, 'abc', 'the new site still records its trunk');
+	assert.equal(
+		settings.values.siteMeta['/sites/other'].label,
+		'Renamed mid-clone',
+		'and the rename that happened while it read is still there'
+	);
+	assert.equal(settings.values.siteMeta['/sites/other'].initialized, true, 'with the rest of that record intact');
+});
 
 test('the folder can be revealed while it is still being cloned, without being registered', async () => {
 	const { root, settings, inside, siteDir } = await runSetup({

@@ -1018,11 +1018,33 @@ ipcMain.handle('github:open-pr', async (event, sitePath, options = {}) => {
 // --- Trunk update path (#94) --- git mechanics live in src/trunk-update.js;
 // these handlers only add IPC plumbing and electron-store writes.
 
-async function mergeSiteMeta(sitePath, patch) {
+/**
+ * The one way a site's record is written: read, change, write, with no `await`
+ * between the read and the write.
+ *
+ * The store's `get` and `set` are synchronous, so the event loop is what
+ * serialises writers, and it only does so while nothing yields in between. A
+ * writer that reads the record, awaits anything, and then writes what it read
+ * saves a snapshot that another writer may have moved on from, and the other
+ * writer's change is gone (#172). The value that made that matter is a
+ * branch's recorded base, the one thing a branch cannot recompute. So every
+ * change is expressed against the record as it is at the moment of the write,
+ * and the read happens here, after the store has been awaited.
+ *
+ * @param {string}                     sitePath
+ * @param {(record: Object) => Object} change   Given the current record, returns the record to store.
+ * @return {Promise<Object>} The record as written.
+ */
+async function changeSiteMeta(sitePath, change) {
     const s = await getStore();
     const meta = s.get('siteMeta') || {};
-    meta[sitePath] = { ...(meta[sitePath] || {}), ...patch };
+    meta[sitePath] = change(meta[sitePath] || {});
     s.set('siteMeta', meta);
+    return meta[sitePath];
+}
+
+async function mergeSiteMeta(sitePath, patch) {
+    await changeSiteMeta(sitePath, (m) => ({ ...m, ...patch }));
 }
 
 // --- Ticket branches (#108) --- git mechanics live in src/ticket-branches.js;
@@ -1058,9 +1080,7 @@ async function migrateSiteToBranches(sitePath) {
     // Nothing was being worked on, so there is no work to put on a branch. The
     // empty map is recorded so this does not re-run, and it costs no git I/O.
     if (!m.tracTicket) {
-        const migrated = { branches: {}, currentBranch: TRUNK };
-        await mergeSiteMeta(sitePath, migrated);
-        return { ...m, ...migrated };
+        return changeSiteMeta(sitePath, (now) => (now.branches ? now : { ...now, branches: {}, currentBranch: TRUNK }));
     }
 
     try {
@@ -1086,9 +1106,27 @@ async function migrateSiteToBranches(sitePath) {
             },
             currentBranch: ref
         };
-        await mergeSiteMeta(sitePath, migrated);
-        return { ...m, ...migrated };
+        // The git work above sits between this function's read and its write,
+        // so a migration that finished in the meantime wins: its map is the one
+        // with the branch point the checkout it made is on (#172).
+        return changeSiteMeta(sitePath, (now) => (now.branches ? now : { ...now, ...migrated }));
     } catch (e) {
+        // Losing the race is not failing. The winner created the branch, so
+        // `startTicketBranch` threw `branch-exists` here rather than falling
+        // through to the guard above, and the record on disk is already the
+        // migrated one. Handing back the read from the top of this function
+        // would tell every caller the site has no branches at all, and
+        // `branches:rebase` would refuse a ticket whose base is on record as
+        // having none.
+        const current = await readSiteMeta(sitePath);
+        if (current.branches) {
+            // Logged even though it is benign: what this branch tests is the
+            // record, not the error, so a genuine failure that happens to
+            // coincide with another flow finishing the migration would
+            // otherwise leave nothing anywhere.
+            logEvent('branches', `migration of ${describeRefused(sitePath)} was finished by another flow first — ${String(e && e.message ? e.message : e)}`);
+            return current;
+        }
         // A site that cannot be branched right now — directory on a volume that
         // is not mounted, a clone that never finished — keeps working exactly as
         // it did before. Nothing is persisted, so the next attempt retries:
@@ -1358,6 +1396,43 @@ async function appliedPatchSubmissionRefusal(sitePath) {
     };
 }
 
+/**
+ * A work-meta change computed from the work meta itself, applied at the moment
+ * of the write instead of from a read taken before it.
+ *
+ * Which scope the write lands in is the one part that cannot be answered
+ * without yielding, so it is answered first; everything after it is a single
+ * read-change-write. The alternative, reading the work meta and deciding from
+ * that read, is the shape that loses whatever another flow wrote in between
+ * (#172).
+ *
+ * Against a named branch, like `writeWorkMetaOn` and for the same reason: the
+ * caller that needs this has the ref in hand and has already refused if it is
+ * trunk, so re-deriving it from HEAD would spend a Git spawn to ask a question
+ * that is already answered and could answer it differently.
+ *
+ * @param {string}                    sitePath
+ * @param {string}                    ref
+ * @param {(work: Object) => ?Object} change   Given the current work meta, the patch to merge, or null to write nothing.
+ */
+async function changeWorkMetaOn(sitePath, ref, change) {
+    const scope = await workMetaScope(sitePath, ref);
+    await changeSiteMeta(sitePath, (m) => {
+        if (!scope) {
+            const patch = change(m);
+            return patch ? { ...m, ...patch } : m;
+        }
+        const branches = m.branches || {};
+        // The scope was resolved before the store was awaited, so the entry it
+        // named can have been deleted since. Re-creating it here would leave a
+        // branch record holding this one field and no branch point.
+        if (!branches[scope]) return m;
+        const patch = change(branches[scope]);
+        if (!patch) return m;
+        return { ...m, branches: { ...branches, [scope]: { ...branches[scope], ...patch } } };
+    });
+}
+
 async function writeWorkMeta(sitePath, patch) {
     const { ref } = await activeBranch(sitePath);
     return writeWorkMetaOn(sitePath, ref, patch);
@@ -1400,11 +1475,16 @@ async function workMetaScope(sitePath, ref) {
     return (m.branches || {})[ref] ? ref : null;
 }
 
+// The `branches` map is replaced whole, so it is computed from the record at
+// the moment of the write, not from a read made a step earlier: the step in
+// between is exactly where a branch another flow had just started went missing
+// (#172).
 async function mergeBranchMeta(sitePath, ref, patch) {
-    const m = await readSiteMeta(sitePath);
-    const branches = { ...(m.branches || {}) };
-    branches[ref] = { ...(branches[ref] || {}), ...patch };
-    await mergeSiteMeta(sitePath, { branches });
+    await changeSiteMeta(sitePath, (m) => {
+        const branches = { ...(m.branches || {}) };
+        branches[ref] = { ...(branches[ref] || {}), ...patch };
+        return { ...m, branches };
+    });
 }
 
 /**
@@ -2207,23 +2287,23 @@ ipcMain.handle('wordpress:setup', async (event, destDir, options = {}) => {
 		if (!sites.includes(siteDir)) {
 			sites.push(siteDir);
 			s.set('sites', sites);
-			const meta = s.get('siteMeta');
 			const siteLabel = typeof options.siteLabel === 'string' && options.siteLabel.trim().length
 				? options.siteLabel.trim()
 				: uniqueName;
-			const existingMeta = meta[siteDir] || {};
-			meta[siteDir] = {
-				...existingMeta,
+			// Read before the record is touched rather than in the middle of
+			// writing it: this is a Git spawn on the clone that just finished,
+			// and holding the whole site map across it would write back a map
+			// that predates whatever another flow stored in the meantime — the
+			// same read-await-write #172 is about, over every site at once.
+			let trunkInfo = null;
+			try { trunkInfo = await readTrunkInfo(siteDir); } catch {}
+			await changeSiteMeta(siteDir, (m) => ({
+				...m,
 				initialized: false,
-				createdAt: existingMeta.createdAt || new Date().toISOString(),
-				label: existingMeta.label || siteLabel
-			};
-			try {
-				const { trunkOid, trunkDate } = await readTrunkInfo(siteDir);
-				meta[siteDir].trunkOid = trunkOid;
-				meta[siteDir].trunkDate = trunkDate;
-			} catch {}
-			s.set('siteMeta', meta);
+				createdAt: m.createdAt || new Date().toISOString(),
+				label: m.label || siteLabel,
+				...(trunkInfo ? { trunkOid: trunkInfo.trunkOid, trunkDate: trunkInfo.trunkDate } : {})
+			}));
 		}
 		notify('download:status', { phase: 'done', target: siteDir, sitePath: siteDir });
 		return siteDir;
@@ -2391,7 +2471,6 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 		} finally {
 			progress.flush();
 		}
-		baseOid = ((await readSiteMeta(sitePath)).branches || {})[branchRef]?.baseOid || null;
 	} else {
 		// Starting a ticket from another ticket parks that one first; from trunk
 		// the loose edits ride along into the new branch (that is deliberate —
@@ -2440,7 +2519,13 @@ ipcMain.handle('sites:set-ticket', async (event, sitePath, ref, options) => with
 
 	await mergeBranchMeta(sitePath, branchRef, {
 		tracTicket: parsed.id,
-		baseOid,
+		// Only when this flow is the one that created the branch. The
+		// existing-branch path used to read the recorded base and write it
+		// straight back, which rolled back a `branches:rebase` that moved it
+		// while the switch was running — the base is the one value a branch
+		// cannot recompute (#172), and a write is not the way to leave it
+		// alone.
+		...(baseOid === undefined ? {} : { baseOid }),
 		lastUsedAt: new Date().toISOString()
 	});
 	await mergeSiteMeta(sitePath, { tracTicket: parsed.id, currentBranch: branchRef });
@@ -2523,8 +2608,14 @@ ipcMain.handle('branches:rebase', async (event, sitePath) => withRegisteredSite(
 		// with it. Its text goes: reverse-applying hunks written against the
 		// old trunk cannot be trusted on the new one, and a record without a
 		// text is exactly "applied, not revertable" to site:status.
-		const { appliedPatch } = await readWorkMeta(sitePath);
-		if (appliedPatch && appliedPatch.text) await writeWorkMeta(sitePath, { appliedPatch: { ...appliedPatch, text: null } });
+		//
+		// Decided at the moment of the write, not from a read taken before it:
+		// resolving the scope is a Git spawn, and an apply or a discard landing
+		// in that window used to be replaced by this record, leaving a revert
+		// banner for a patch that is not there (#172).
+		await changeWorkMetaOn(sitePath, ref, (work) => (work.appliedPatch && work.appliedPatch.text
+			? { appliedPatch: { ...work.appliedPatch, text: null } }
+			: null));
 	}
 	return { ok: true, ticket: ticketIdFromRef(ref), from: result.from, to: result.to, rebased: result.rebased, parked: result.parked };
 }));
@@ -2547,13 +2638,11 @@ ipcMain.handle('branches:delete', async (_e, sitePath, targetRef) => withRegiste
 		if (merging) return merging;
 	}
 	await deleteTicketBranch(sitePath, targetRef, { onChild: trackGitChild(sitePath) });
-	const m = await readSiteMeta(sitePath);
-	const branches = { ...(m.branches || {}) };
-	delete branches[targetRef];
 	const wasActive = current === targetRef;
-	await mergeSiteMeta(sitePath, {
-		branches,
-		...(wasActive ? { currentBranch: TRUNK, tracTicket: null } : {})
+	await changeSiteMeta(sitePath, (m) => {
+		const branches = { ...(m.branches || {}) };
+		delete branches[targetRef];
+		return { ...m, branches, ...(wasActive ? { currentBranch: TRUNK, tracTicket: null } : {}) };
 	});
 	// `movedToTrunk` says the checkout itself changed, which `current` alone
 	// cannot: a delete made from trunk reports trunk either way, and the note
