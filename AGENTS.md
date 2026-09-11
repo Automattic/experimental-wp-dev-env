@@ -35,6 +35,8 @@ Before reporting a GitHub workflow complete, verify every requested final state 
 
 CodeRabbit reviews every non-draft pull request to `trunk` against the same file, configured in `.coderabbit.yaml`. It comments only and never approves. That does not replace the author's pass: a finding fixed before the PR costs one message, the same finding on the PR costs a review cycle, and a human reviewer should not be the first reader of a diff the author never checked.
 
+Once the pull request is open and out of draft, read the CodeRabbit check's message, not its state: the check reads `pass` when the review was rate limited or otherwise did not run. If it did not run, the pre-PR review is the review of record. Say so in the pull request's review outcome, with the head it covered, and if the head has moved since, run the review again on the new head rather than carrying the earlier result forward.
+
 That file carries the procedure as well as the standard. Follow it rather than improvising a review.
 
 ### The pull request description follows the template
