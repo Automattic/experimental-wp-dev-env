@@ -1374,12 +1374,32 @@ async function writeWorkMeta(sitePath, patch) {
  * @param {string} sitePath
  * @param {string} ref
  * @param {Object} patch
+ * @return {Promise<?string>} The branch the write landed on, null for the site.
  */
 async function writeWorkMetaOn(sitePath, ref, patch) {
+    const scope = await workMetaScope(sitePath, ref);
+    await (scope ? mergeBranchMeta(sitePath, scope, patch) : mergeSiteMeta(sitePath, patch));
+    return scope;
+}
+
+/**
+ * Which scope a work-meta write for `ref` lands in, branch or site, without
+ * writing — the same rule `readWorkMeta` reads by, so a caller that needs to
+ * know where the value it just wrote can be found does not have to guess.
+ *
+ * A ref with no entry of its own has nowhere per-branch to go: a site that
+ * predates #108, one whose migration could not run, a branch the contributor's
+ * own Git client checked out. The site is where the value lives for those, and
+ * where the reader will look for it.
+ *
+ * @param {string} sitePath
+ * @param {string} ref
+ * @return {Promise<?string>} The branch, or null for the site.
+ */
+async function workMetaScope(sitePath, ref) {
+    if (ref === TRUNK) return null;
     const m = await readSiteMeta(sitePath);
-    const meta = (m.branches || {})[ref] || null;
-    if (ref === TRUNK || !meta) return mergeSiteMeta(sitePath, patch);
-    return mergeBranchMeta(sitePath, ref, patch);
+    return (m.branches || {})[ref] ? ref : null;
 }
 
 async function mergeBranchMeta(sitePath, ref, patch) {
@@ -1615,16 +1635,29 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
             // return below, so it clears the flag on the ticket branch. Writing
             // it where HEAD is now put it at site level, where nothing cleared
             // it and it surfaced as a false "Update incomplete" banner the next
-            // time the contributor was on trunk (#419). Same for the applied
-            // patch: the reset took it off the tree the ticket comes back to.
-            await writeWorkMetaOn(sitePath, branchBefore, {
+            // time the contributor was on trunk (#419).
+            const flagScope = result.upToDate
+                ? null
+                : await writeWorkMetaOn(sitePath, branchBefore, { updateIncomplete: true });
+            // Two site-level writes, for two different reasons.
+            //
+            // The flag: clear the copy earlier versions left behind, so a site
+            // that already carries the false banner is not stuck with it. Only
+            // once the live flag is somewhere else, though — a branch with no
+            // entry of its own has just written its flag here, and an
+            // up-to-date run wrote none, so in neither case is what is here
+            // stale, and clearing it would hide a genuine incomplete state.
+            //
+            // The applied patch: unlike the flag, it belongs to the tree the
+            // update reset, and that tree is trunk's. A ticket's patch went
+            // into its WIP commit when the park committed the worktree and
+            // comes back with the return checkout below, so the branch's record
+            // must survive — `branches:rebase` keeps it for the same reason,
+            // and #328 reads it to refuse publishing another author's hunks.
+            await mergeSiteMeta(sitePath, {
                 appliedPatch: null,
-                ...(result.upToDate ? {} : { updateIncomplete: true })
+                ...(flagScope ? { updateIncomplete: false } : {})
             });
-            // The copy earlier versions left behind, cleared once so a site that
-            // already carries the false banner is not stuck with it until some
-            // later update happens to run from trunk.
-            if (branchBefore !== TRUNK) await mergeSiteMeta(sitePath, { updateIncomplete: false });
 
             // Put the contributor back where they were. Without this the site
             // sits on trunk while the panel still names the ticket, every patch
@@ -1663,11 +1696,12 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
             if (stage === 'checkout') {
                 const patch = { updateIncomplete: true };
                 if (e && e.worktreeReset) patch.appliedPatch = null;
-                // Through writeWorkMeta, not mergeSiteMeta: both of these are
-                // per-branch under #108, and the site is on trunk here only
-                // because the park succeeded — a failure before it leaves the
-                // ticket checked out, where the site-level record is the wrong
-                // place for either.
+                // Through writeWorkMeta, which reads HEAD — and here that is the
+                // right question, unlike in the success path above (#419). This
+                // failure does not return anyone to their ticket: the recovery
+                // below unlinks and leaves the contributor on trunk, which is
+                // where the flag will be read from. A failure before the park
+                // leaves the ticket checked out, and HEAD says so.
                 try { await writeWorkMeta(sitePath, patch); } catch {}
             }
             sendLog(`\nUpdate failed during ${stage}: ${String(e && e.message ? e.message : e)}\n`);

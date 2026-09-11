@@ -2797,9 +2797,9 @@ test('git:update-trunk parks the ticket, updates, and returns to it (issue #108)
 	assert.equal(meta.trunkOid, 'new');
 	// The incomplete flag describes the ticket's tree, not the site's.
 	assert.equal(meta.branches['ticket/59234'].updateIncomplete, true);
-	// Site level holds no truth about it any more: what is there is the explicit
-	// clear of the copy earlier versions wrote, never a fresh `true` (#419).
-	assert.equal(meta.updateIncomplete, false, 'it must not be written at site level any more');
+	// Site level holds no fresh `true` any more: what is there is the explicit
+	// clear of the copy earlier versions wrote (#419).
+	assert.equal(meta.updateIncomplete, false, 'the live flag is the branch\'s, and this is the cleared copy');
 });
 
 // #419: the flag that says the tree is newer than the built assets was written
@@ -2882,6 +2882,165 @@ test('git:update-trunk still records the incomplete flag at site level with no t
 	assert.deepEqual(switchToBranch.calls, [], 'nothing to park');
 	assert.equal(settings.values.siteMeta['/sites/wp'].updateIncomplete, true);
 	assert.equal((await main.invoke('site:status', '/sites/wp')).updateIncomplete, true);
+});
+
+// The stale copy the correction above has to clear: a site that already went
+// through the bug carries `updateIncomplete: true` at site level, and nothing
+// in the normal flow ever reaches it again. Without this one-time clear the
+// false banner outlives the fix on every machine that already met it.
+test('git:update-trunk clears the stale site-level flag an earlier version left (issue #419)', async () => {
+	let head = 'ticket/60002';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: {
+			'/sites/wp': {
+				tracTicket: 60002,
+				currentBranch: 'ticket/60002',
+				updateIncomplete: true, // what the bug left behind
+				branches: { 'ticket/60002': { tracTicket: 60002, baseOid: 'abc' } }
+			}
+		}
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	const meta = settings.values.siteMeta['/sites/wp'];
+	assert.equal(meta.updateIncomplete, false, 'the copy nothing else would ever reach');
+	assert.equal(meta.branches['ticket/60002'].updateIncomplete, true, 'the live flag, on the branch the build ends on');
+});
+
+// The clear is not unconditional, and this is why. A branch with no entry of
+// its own — a site whose migration could not run, a branch the contributor's
+// own git client checked out — has just written its flag at site level, so
+// clearing it there would drop the only copy of a genuine incomplete state and
+// leave new code over old assets with nothing saying so.
+test('git:update-trunk keeps the flag when the branch has no meta of its own (issue #419)', async () => {
+	let head = 'ticket/60002';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		// `branches` present, so the migration does not run; the checked-out
+		// branch simply is not in it.
+		siteMeta: { '/sites/wp': { tracTicket: 60002, currentBranch: 'ticket/60002', branches: {} } }
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	assert.equal(settings.values.siteMeta['/sites/wp'].updateIncomplete, true, 'the only copy there is');
+});
+
+// An update that finds nothing to fetch rebuilds nothing, so it writes no flag
+// — and must not erase one. The site-level flag it would have cleared can be a
+// real one: the failure path records it on trunk and leaves the contributor
+// there, and this is the run they make next.
+test('git:update-trunk that is already up to date does not erase a real incomplete flag (issue #419)', async () => {
+	let head = 'ticket/60002';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: true, oldOid: 'same', newOid: 'same', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: {
+			'/sites/wp': {
+				tracTicket: 60002,
+				currentBranch: 'ticket/60002',
+				updateIncomplete: true,
+				branches: { 'ticket/60002': { tracTicket: 60002, baseOid: 'abc' } }
+			}
+		}
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'same', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	assert.equal(settings.values.siteMeta['/sites/wp'].updateIncomplete, true, 'nothing was rebuilt, so nothing is resolved');
+});
+
+// The flag and the applied-patch record move in opposite directions, and this
+// is the one that must not follow the flag onto the branch. The park commits
+// the worktree — applied hunks included — onto the ticket's WIP commit, and the
+// return checkout puts them back, so the patch is still in the work when the
+// update ends. Deleting its record would take away the Revert for hunks that
+// are on disk, and with it the refusal that stops them being submitted as the
+// contributor's own (#328). `branches:rebase` keeps the record for the same
+// reason. Only trunk's tree was reset, so only trunk's record goes.
+test('git:update-trunk keeps a ticket\'s applied-patch record, which the park carried through (issue #419)', async () => {
+	let head = 'ticket/60002';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const appliedPatch = { label: 'PR #8913', text: 'STORED', files: ['f'] };
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: {
+			'/sites/wp': {
+				tracTicket: 60002,
+				currentBranch: 'ticket/60002',
+				appliedPatch,
+				branches: { 'ticket/60002': { tracTicket: 60002, baseOid: 'abc', appliedPatch } }
+			}
+		}
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	const meta = settings.values.siteMeta['/sites/wp'];
+	assert.equal(meta.branches['ticket/60002'].appliedPatch.text, 'STORED', 'the patch is back on disk, so the Revert stays offered');
+	assert.equal(meta.appliedPatch, null, 'trunk\'s own record goes with the tree the update reset');
+	// And the status the card reads, on the ticket, still reports it.
+	assert.equal((await main.invoke('site:status', '/sites/wp')).appliedPatch.label, 'PR #8913');
 });
 
 test('git:update-trunk says where the work went when the update fails (issue #108)', async () => {
