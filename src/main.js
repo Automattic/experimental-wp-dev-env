@@ -37,7 +37,8 @@ const { buildPullRequestEntries } = require('./pr-files.cjs');
 const { resolveRef, changesAgainst, readBlobs, readCommitInfo, treeEntryMode, isLegacySite, mergeInProgress, remoteUrl } = require('./git-read.cjs');
 const { cloneSite } = require('./git-clone.cjs');
 const { openAndScrape, fetchAttachment } = require('./trac-view');
-const { openExternalUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
+const { openExternalUrl, describeRefusedUrl, ALLOWED_URL_SCHEMES } = require('./external-url');
+const { openLinksExternally } = require('./window-links');
 const { deleteRegisteredSite, revealRegisteredSite, clearRegisteredSiteLog } = require('./site-registry');
 const { removeTree } = require('./remove-tree');
 const { createSetupTracker } = require('./setup-tracker');
@@ -57,6 +58,15 @@ const {
 } = require('./ticket-branches');
 const { createProgressThrottle, describeSwitchProgress } = require('./switch-progress.cjs');
 const { getStore } = require('./settings-store');
+
+// How an address leaves this app, shared by the renderer's `url:open` and the
+// link handling in window-links.js. A refusal is logged rather than dropped, so
+// a caller that trips the guard shows up in the log instead of doing nothing.
+const externalUrlDeps = {
+	openExternal: (target) => shell.openExternal(target),
+	onRefused: (description) => logEvent('url', `refused to open ${description} — only ${ALLOWED_URL_SCHEMES.join(', ')} are allowed`),
+	onFailed: (url, error) => logEvent('url', `could not open ${describeRefusedUrl(url)}: ${error && error.message}`)
+};
 
 // One name for the send-only progress channel (#173), shared with preload.js
 // through the tests rather than by import — the renderer bundle and the main
@@ -494,6 +504,10 @@ function createWindow() {
 			nodeIntegration: false
 		}
 	});
+
+	// Links belong in the contributor's browser, not in a window of this app
+	// (#284). Set before the page loads so the first click is covered too.
+	openLinksExternally(mainWindow.webContents, externalUrlDeps);
 
 	mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
@@ -2652,12 +2666,8 @@ ipcMain.handle('branches:delete', async (_e, sitePath, targetRef) => withRegiste
 }));
 
 // Only the schemes the app actually uses reach the OS — see external-url.js for
-// why. A refusal is logged rather than dropped so a future caller that trips the
-// guard shows up in the log file instead of just doing nothing.
-ipcMain.handle('url:open', async (_e, url) => openExternalUrl(url, {
-	openExternal: (target) => shell.openExternal(target),
-	onRefused: (description) => logEvent('url', `refused to open ${description} — only ${ALLOWED_URL_SCHEMES.join(', ')} are allowed`)
-}));
+// why.
+ipcMain.handle('url:open', async (_e, url) => openExternalUrl(url, externalUrlDeps));
 
 // --- opening a site's code -----------------------------------------------
 //
