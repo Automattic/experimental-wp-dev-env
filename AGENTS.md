@@ -80,6 +80,18 @@ The reasons are editing, not rendering. A long line reflows to whatever width th
 
 Line breaks still mean something everywhere else, and none of this touches them: list items, table rows, headings, fenced code, VitePress `:::` containers, YAML frontmatter and the body of an HTML comment all keep the shape they have.
 
+## Bootstrap
+
+`npm ci` at the repository root, on the Node pinned in [`.nvmrc`](.nvmrc).
+
+Do not add `--ignore-scripts`. The root `postinstall` is what makes the tree usable.
+
+Notice that a finished `npm ci` still has to download the Electron binary. `electron` ships no install script of its own; `require('electron')` downloads it into `node_modules/electron/dist/` the first time something asks for it.
+
+The `allowScripts` map in `package.json` is npm's install-script approval list, and a fresh install warns about the few packages it does not cover. That warning is expected.
+
+The user guide under `docs/` is a separate npm package with its own lockfile. A root `npm ci` does not reach it, and `npm run docs:*` fails with `vitepress: not found` until `npm ci --prefix docs` has been run once; [CONTRIBUTING.md](CONTRIBUTING.md) covers the rest of that workflow.
+
 ## Commands
 
 See `package.json` scripts. To run a single test file (not exposed as a script): `node --test tests/unit/azure-sign.test.cjs`.
