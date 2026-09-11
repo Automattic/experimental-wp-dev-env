@@ -3043,6 +3043,49 @@ test('git:update-trunk keeps a ticket\'s applied-patch record, which the park ca
 	assert.equal((await main.invoke('site:status', '/sites/wp')).appliedPatch.label, 'PR #8913');
 });
 
+// The same branch-with-no-entry case as above, for the other field. When the
+// branch has no entry, site level *is* its work meta — `readWorkMeta` reads it
+// there — so clearing the patch record there deletes the record of a patch the
+// park has just carried into the WIP commit and the return checkout is about to
+// put back on disk. The hunks would be applied with nothing saying so: no
+// Revert, and no refusal to stop them being submitted as the contributor's own
+// (#328). Only trunk's own record is trunk's to clear.
+test('git:update-trunk keeps the applied-patch record of a branch with no meta of its own (issue #419)', async () => {
+	let head = 'ticket/60002';
+	const switchToBranch = spy(async (_dir, to) => { head = to; return { switched: true, parked: true }; });
+	const currentBranchName = spy(async () => head);
+	const updateToLatestTrunk = spy(async () => ({
+		upToDate: false, oldOid: 'old', newOid: 'new', lockfileChanged: false, trunkDate: '2026-01-01T00:00:00.000Z'
+	}));
+	const settings = fakeSettingsStore({
+		sites: ['/sites/wp'],
+		siteMeta: {
+			'/sites/wp': {
+				tracTicket: 60002,
+				currentBranch: 'ticket/60002',
+				appliedPatch: { label: 'PR #8913', text: 'STORED', files: ['f'] },
+				branches: {}
+			}
+		}
+	});
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...settings.stubs,
+			'./trunk-update': { updateToLatestTrunk, readTrunkInfo: async () => ({ trunkOid: 'new', trunkDate: 'd' }) },
+			'./ticket-branches': { switchToBranch, currentBranchName }
+		}
+	});
+
+	const event = createIpcEvent();
+	const { updateId } = await main.invokeWith('git:update-trunk', event, '/sites/wp');
+	await waitForDone(event, 'git:update-trunk:done', 'updateId', updateId);
+
+	const status = await main.invoke('site:status', '/sites/wp');
+	assert.equal(status.appliedPatch.label, 'PR #8913', 'the patch is back on disk, so the Revert stays offered');
+	assert.equal(status.appliedPatch.revertable, true, 'and the text that reverses it was not dropped');
+});
+
 test('git:update-trunk says where the work went when the update fails (issue #108)', async () => {
 	// On a ticket to begin with; on trunk once the handler has parked it. That
 	// ordering is the whole point — the failure happens after the move.
