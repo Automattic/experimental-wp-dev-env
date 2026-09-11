@@ -14,6 +14,7 @@
 
 const fs = require( 'node:fs' );
 const path = require( 'node:path' );
+const { execFileSync } = require( 'node:child_process' );
 const { test, expect, _electron: electron } = require( '@playwright/test' );
 
 const REPO_ROOT = path.join( __dirname, '..', '..', '..' );
@@ -303,6 +304,54 @@ test( 'app.asar carries exactly the allow-listed top-level entries', async () =>
 		.not.toContain( 'index.jsx' );
 	expect( rendererEntries, 'the renderer bundle is missing — was `npm run build:once` run before packaging?' )
 		.toEqual( expect.arrayContaining( [ 'index.html', 'index.js', 'index.css' ] ) );
+} );
+
+/**
+ * Every file `src/**\/*` puts in the archive, checked against the repository.
+ *
+ * The root assertion above cannot see one level down, and `src/**\/*` is
+ * recursive: anything sitting under `src/` at build time ships. Enumerating the
+ * runtime files by hand would rebuild the maintenance problem the allow-list
+ * exists to remove — a list of eighty entries edited under time pressure is the
+ * exclusion list again, wearing a different sign. So the expected set is derived
+ * from Git instead, and moves with the repository on its own:
+ *
+ *   tracked under src/, minus the esbuild entry point the bundle replaces,
+ *   plus the two build outputs that replace it.
+ *
+ * A credential, a scratch file, a coverage report or a stray build artefact
+ * written anywhere under `src/` is untracked, so it is not in the expected set,
+ * so it fails here — by name, without anyone having predicted it.
+ */
+test( 'app.asar carries exactly the repository files src/**/* allows', async () => {
+	const tracked = execFileSync( 'git', [ 'ls-files', 'src' ], { cwd: REPO_ROOT, encoding: 'utf8' } )
+		.split( '\n' )
+		.filter( Boolean )
+		.map( ( file ) => file.replace( /\\/g, '/' ) );
+
+	// The esbuild entry point is excluded by `build.files`; its outputs are
+	// gitignored, because they are built rather than committed (#120).
+	const expected = [
+		...tracked.filter( ( file ) => file !== 'src/renderer/index.jsx' ),
+		'src/renderer/index.js',
+		'src/renderer/index.css',
+	].sort();
+
+	const shipped = await electronApp.evaluate( ( { app } ) => {
+		const nodeRequire = process.mainModule.require;
+		const appFs = nodeRequire( 'node:fs' );
+		const appPath = nodeRequire( 'node:path' );
+		const root = app.getAppPath();
+
+		const walk = ( dir ) => appFs.readdirSync( dir, { withFileTypes: true } ).flatMap( ( entry ) => {
+			const full = appPath.join( dir, entry.name );
+			return entry.isDirectory() ? walk( full ) : [ appPath.relative( root, full ).split( appPath.sep ).join( '/' ) ];
+		} );
+
+		return walk( appPath.join( root, 'src' ) ).sort();
+	} );
+
+	expect( shipped ).toEqual( expected );
 } );
 
 test( 'app.asar.unpacked carries only allow-listed top-level entries', () => {
