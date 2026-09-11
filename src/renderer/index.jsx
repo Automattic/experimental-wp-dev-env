@@ -50,6 +50,7 @@ import { highlightDiff, hasDiffLines } from './diff-highlight.cjs';
 import { highlightLog } from './log-highlight.cjs';
 import { carryTestMode } from './github-account.cjs';
 import { changesNoteParts, discardOutcome, applyFeedbackAfterDiscard, noteAfterDiscard, noteAfterProbe, discardBlocked, discardDisabledReason, DISCARD_CONFIRM_MESSAGE } from './changes-note.cjs';
+import { ticketActionDisabledReason, rebaseDisabledReason, dirtyTrunkQuestion } from './ticket-actions.cjs';
 import { initialConfirmations, confirmationReducer, prConfirmationMessage, deleteFailureMessage } from './confirmations.cjs';
 
 const TERMINAL_ALLOWED_SCRIPTS = ['build', 'build:dev', 'dev', 'test', 'watch', 'grunt'];
@@ -73,26 +74,32 @@ const COPY_BUTTON_LABELS = {
   failed: 'Could not copy'
 };
 
-// One discard action, wherever it is offered. Keeping the disabled rendering
-// here means the ticket note cannot lose the explanation while the review
-// modal keeps it (or vice versa).
-function DiscardChangesLink({ label, onClick, reason, style }) {
+// A button that explains itself while disabled (#409). A reason disables it
+// the accessible way: still in the tab order, `aria-disabled` rather than
+// `disabled` so assistive technology reads it, the sentence as its
+// description and as a tooltip. `title` would do neither, since Chromium
+// shows no tooltip on a disabled control. Without a reason it is the plain
+// Button, `disabled` passed through for gates that need no sentence.
+function ReasonedButton({ reason, disabled, children, ...props }) {
   if (!reason) {
-    return <Button variant="link" isDestructive onClick={onClick} style={style}>{label}</Button>;
+    return <Button disabled={disabled} {...props}>{children}</Button>;
   }
   return (
     <Tooltip text={reason} placement="bottom">
       <Button
-        variant="link"
-        isDestructive
-        onClick={onClick}
+        {...props}
         disabled
         accessibleWhenDisabled
         description={reason}
-        style={style}
-      >{label}</Button>
+      >{children}</Button>
     </Tooltip>
   );
+}
+// One discard action, wherever it is offered. Keeping the disabled rendering
+// here means the ticket note cannot lose the explanation while the review
+// modal keeps it (or vice versa).
+function DiscardChangesLink({ label, onClick, reason, style }) {
+  return <ReasonedButton variant="link" isDestructive onClick={onClick} reason={reason} style={style}>{label}</ReasonedButton>;
 }
 // What the app is doing while a pull request is being opened (#167). Each step
 // is named because they take visibly different amounts of time — forking is the
@@ -2681,7 +2688,10 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       <span>{describeSwitchProgress(switchProgress)}</span>
     </div>
   ) : null;
-  const ticketActionsBlocked = ticketSaving || deletingBranch !== null || updateState !== 'idle' || installing || building;
+  // One gate for every ticket action, and the sentence that goes with it
+  // (#409): a control this disables says why, through ReasonedButton.
+  const ticketActionsReason = ticketActionDisabledReason({ ticketSaving, deletingBranch, updateState, installing, building });
+  const ticketActionsBlocked = Boolean(ticketActionsReason);
 
   // The one question both paths now ask (#234). Picking a ticket while trunk
   // has uncommitted edits used to do opposite things — carry them silently
@@ -2692,45 +2702,40 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
   // loose edits cannot ride into it. Rendered as a variable because two
   // views hold a "Link ticket" field, and a refusal with no panel under it
   // would be a dead end in the second one.
+  const dirtyQuestion = blockedByTrunkWork ? dirtyTrunkQuestion(blockedByTrunkWork) : null;
   const blockedPanel = blockedByTrunkWork ? (
     <div style={{ marginTop: 8, padding: '10px 12px', background: '#fcf9e8', border: '1px solid #dba617', borderRadius: 6, color: '#6e5406', fontSize: 12 }}>
-      <div>
-        {blockedByTrunkWork.files
-          ? `You have ${blockedByTrunkWork.files === 1 ? '1 uncommitted change' : `${blockedByTrunkWork.files} uncommitted changes`} on this site, not on any ticket yet.`
-          : 'You have uncommitted changes on this site, not on any ticket yet.'}
-        {' '}What should happen to them?
-        {blockedByTrunkWork.canCarry ? '' : ' This ticket already has its own work here, so these edits cannot come along into it.'}
-      </div>
+      <div>{dirtyQuestion.question}</div>
       {patchSavedTo ? (
         <div style={{ marginTop: 6, fontWeight: 600 }}>
           Saved to {patchSavedTo}. The edits are still in the working tree.
         </div>
       ) : null}
       <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        {blockedByTrunkWork.canCarry ? (
-          <Button
+        {dirtyQuestion.carry ? (
+          <ReasonedButton
             variant="link"
             isBusy={ticketSaving}
-            disabled={ticketActionsBlocked}
+            reason={ticketActionsReason}
             onClick={() => saveTicket(blockedByTrunkWork.ref, { carryTrunkWork: true })}
             style={{ fontSize: 12 }}
-          >Take these edits into {blockedByTrunkWork.ticket ? `#${blockedByTrunkWork.ticket}` : 'the ticket'}</Button>
+          >{dirtyQuestion.carry}</ReasonedButton>
         ) : null}
-        <Button variant="link" disabled={ticketActionsBlocked} onClick={() => saveTrunkWorkThenStartClean(blockedByTrunkWork.ref)} style={{ fontSize: 12 }}>
-          Save them as a patch, then start clean…
-        </Button>
-        <Button
+        <ReasonedButton variant="link" reason={ticketActionsReason} onClick={() => saveTrunkWorkThenStartClean(blockedByTrunkWork.ref)} style={{ fontSize: 12 }}>
+          {dirtyQuestion.save}
+        </ReasonedButton>
+        <ReasonedButton
           variant="link"
           isDestructive
-          disabled={ticketActionsBlocked}
+          reason={ticketActionsReason}
           onClick={() => confirmAnd('Discard the uncommitted edits on trunk? This cannot be undone.', () => discardTrunkWorkAndSwitch(blockedByTrunkWork.ref))}
           style={{ fontSize: 12 }}
-        >Discard them and start clean</Button>
+        >{dirtyQuestion.discard}</ReasonedButton>
         {/* The way out that touches nothing — three consequential actions
             with no fourth door is its own trap (#234). */}
-        <Button variant="link" disabled={ticketActionsBlocked} onClick={() => { setBlockedByTrunkWork(null); setPatchSavedTo(''); }} style={{ fontSize: 12 }}>
-          Cancel
-        </Button>
+        <ReasonedButton variant="link" reason={ticketActionsReason} onClick={() => { setBlockedByTrunkWork(null); setPatchSavedTo(''); }} style={{ fontSize: 12 }}>
+          {dirtyQuestion.cancel}
+        </ReasonedButton>
       </div>
     </div>
   ) : null;
@@ -2759,22 +2764,22 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
           <div style={{ flex: '1 1 auto', minWidth: 0 }}>
             <span style={{ fontSize: 13, color: '#1d2327' }}>
               {linked ? <>You also have work on #{row.ticketId}{' — '}</> : null}
-              <Button variant="link" onClick={() => saveTicket(String(row.ticketId))} disabled={ticketActionsBlocked} style={{ fontSize: 13 }}>
+              <ReasonedButton variant="link" onClick={() => saveTicket(String(row.ticketId))} reason={ticketActionsReason} style={{ fontSize: 13 }}>
                 {linked ? 'switch' : `Continue working on #${row.ticketId}`}
-              </Button>
+              </ReasonedButton>
             </span>
             {row.timeLabel ? (
               <div style={{ marginTop: 2, fontSize: 11, color: '#6c6f72' }}>{row.timeLabel}</div>
             ) : null}
           </div>
-          <Button
+          <ReasonedButton
             variant="link"
             isDestructive
             isBusy={deletingBranch === row.ref}
-            disabled={ticketActionsBlocked}
+            reason={ticketActionsReason}
             onClick={() => confirmAnd(`Delete all work on #${row.ticketId} on this site? This cannot be undone.`, () => deleteTicketWork(row.ref))}
             style={{ fontSize: 12, flex: '0 0 auto' }}
-          >Delete this ticket&apos;s work</Button>
+          >Delete this ticket&apos;s work</ReasonedButton>
         </div>
       ))}
     </div>
@@ -4647,7 +4652,7 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                   {tracAttachmentsLoading ? 'Reading ticket…' : 'Read details from Trac'}
                 </Button>
               ) : null}
-              <Button variant="link" isDestructive onClick={unlinkTicket} disabled={ticketActionsBlocked}>Unlink</Button>
+              <ReasonedButton variant="link" isDestructive onClick={unlinkTicket} reason={ticketActionsReason}>Unlink</ReasonedButton>
             </div>
 
             {staleTicketNotice ? (
@@ -4656,14 +4661,14 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                 <div style={{ marginTop: 4 }}>{staleTicketNotice.body}</div>
                 <div style={{ marginTop: 8 }}>
                   {/* Rewrites the tree when the ticket is checked out, so the
-                      same gate as a discard: nothing running over the files. */}
-                  <Button
+                      same gate as a discard: nothing running over the files.
+                      Every branch of that gate has a sentence (#409). */}
+                  <ReasonedButton
                     variant="secondary"
                     isBusy={ticketSaving}
-                    disabled={ticketActionsBlocked || layerExitBlocked}
-                    title={layerExitBlocked ? discardDisabledReason({ patchHasChanges: true, isUpdating, installing, building, devServerActive: isDevProcessActive, discarding }) : undefined}
+                    reason={rebaseDisabledReason({ ticketSaving, deletingBranch, updateState, installing, building, devServerActive: isDevProcessActive, discarding })}
                     onClick={rebaseTicket}
-                  >{staleTicketNotice.action}</Button>
+                  >{staleTicketNotice.action}</ReasonedButton>
                 </div>
               </div>
             ) : null}
@@ -4876,13 +4881,14 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                   aria-label="Trac ticket number or URL"
                 />
               </div>
-              <Button
+              <ReasonedButton
                 variant="secondary"
                 onClick={linkTicket}
                 isBusy={ticketSaving}
-                disabled={ticketActionsBlocked || !ticketInput.trim()}
+                reason={ticketActionsReason}
+                disabled={!ticketInput.trim()}
                 style={{ padding: '10px 16px', borderRadius: 10 }}
-              >Link ticket</Button>
+              >Link ticket</ReasonedButton>
             </div>
             {/* Expectation-setting, not the warning itself: since #234 the
                 app asks before moving or discarding anything, so this only
@@ -5559,13 +5565,14 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
                             placeholder="Ticket number or URL, e.g. 62281"
                             aria-label="Trac ticket number or URL"
                           />
-                          <Button
+                          <ReasonedButton
                             variant="secondary"
                             onClick={linkTicket}
                             isBusy={ticketSaving}
-                            disabled={ticketActionsBlocked || !ticketInput.trim()}
+                            reason={ticketActionsReason}
+                            disabled={!ticketInput.trim()}
                             style={{ justifyContent:'center' }}
-                          >Link ticket</Button>
+                          >Link ticket</ReasonedButton>
                           {ticketError ? <div role="alert" style={{ color:'#d63638', fontSize:12 }}>{ticketError}</div> : null}
                           {switchProgressLine}
                           {savedCleanNotice}
