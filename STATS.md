@@ -43,8 +43,9 @@ git show metrics:downloads.csv | grep 'mac-arm64.dmg'
 
 `badge.json`, on the same branch, holds the number the README badge shows, in the format a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads. It is **not** the total GitHub reports, and it is deliberately neither the larger nor the smaller number:
 
-- **Stable tags only.** Release candidates and betas are excluded, by the `-` in the tag rather than by GitHub's `prerelease` flag, which is set on `v0.1.1` by mistake. A download of `rc.1` two months after 1.0.0 shipped is not somebody adopting the app. They hold 18 downloads between them, frozen since the snapshot of 2026-08-24.
-- **Withdrawn assets still count.** An asset that disappears from the snapshots keeps whatever it had earned. Four macOS `.dmg` files were replaced when the signing key was rotated, and the live API now reports nothing for the 89 downloads that preceded that.
+- **Stable tags only.** Release candidates and betas are excluded, by the `-` in the tag rather than by GitHub's `prerelease` flag. A download of `rc.1` a month after 1.0.0 shipped is not somebody adopting the app. They hold 38 downloads between them all-time; the assets still published hold 29 of those, flat at 18 from 2026-08-24 to 2026-09-07 and then up 11 in the snapshot of 2026-09-11, which is the kind of jump on tags nobody has a reason to install that makes the case for leaving them out.
+- **`v0.1.1` is the exception, and the reason the flag is not used.** That tag is titled "v0.1.1 draft" and GitHub published it as a prerelease, not as a release: this project has shipped four, v0.1.0, v0.1.2, v1.0.0 and v1.0.1. But its three assets are the v0.1.0 binaries (`…Setup.0.1.0.exe`, `…-0.1.0.AppImage`, `…-0.1.0-arm64.dmg`), so their 42 downloads are downloads of the app as it then stood and count as v0.1.0's. Filtering on GitHub's flag would drop them.
+- **Withdrawn assets still count.** An asset that disappears from the snapshots keeps whatever it had earned. Four macOS `.dmg` files on the shipped releases were replaced when the signing key was rotated, and the live API now reports nothing for the 89 downloads that preceded that. Three more went with them on the prerelease tags, worth another 9 that the badge does not count anyway.
 - **A re-upload is a new asset, not a correction.** The replacement is counted on top of what the old file had, matched by `asset_id` rather than by guessing from a counter that went down. A counter that does go down is bad data and fails the run, because GitHub cannot produce one.
 
 [`scripts/download-total.cjs`](scripts/download-total.cjs) does this, over the whole of `downloads.csv`, every time the workflow runs. To reproduce it:
@@ -56,12 +57,27 @@ node scripts/download-total.cjs downloads.csv
 
 The consequence worth knowing: the badge moves once a week, when the workflow runs, not the moment someone downloads something.
 
+### By release
+
+Downloads recorded against each shipped release, as of the snapshot of 2026-09-11. The cumulative column is what the badge shows.
+
+| Release | Published | Downloads | Cumulative | macOS | Windows | Linux |
+|---|---|---|---|---|---|---|
+| v0.1.0 | 2025-10-09 | 127 | 127 | 62 | 39 | 26 |
+| v0.1.2 | 2026-07-31 | +7 | 134 | 68 | 40 | 26 |
+| v1.0.0 | 2026-08-14 | +65 | 199 | 89 | 73 | 37 |
+| v1.0.1 | 2026-08-21 | +41 | 240 | 106 | 90 | 44 |
+
+The platform columns are cumulative too, so the last row is the badge broken down. v0.1.0's 127 is its own 85 plus the 42 recorded under the `v0.1.1` draft tag, for the reason above. The release candidates and the beta are not in this table and not in the badge.
+
+1.0 is the whole story here: 106 downloads in the four weeks since, against the 126 those three tags had accumulated by the last snapshot before it. They are on 134 now, still gaining a download here and there.
+
 ### What the numbers are not
 
 **They count HTTP requests, not people.** A re-download, a `curl` in a CI script, a retry after a dropped connection and a bot crawling the releases page each add one. Treat them as an interest signal, not an install count.
 
 **Source archives and clones are not included.** Only uploaded release assets are counted — the auto-generated `.zip`/`.tar.gz` and `git clone` are not.
 
-**The counter belongs to the asset, not the release.** Deleting a release file and re-uploading it restarts that file at zero, which is part of why these snapshots exist: they are the only record that survives a rename. It has already happened once, to the three artifacts replaced on the v0.1.2 draft, and again to the macOS `.dmg` files when the signing key was rotated. Since the snapshots record `asset_id`, a future one is visible rather than merely suspected.
+**The counter belongs to the asset, not the release.** Deleting a release file and re-uploading it restarts that file at zero, which is part of why these snapshots exist: they are the only record that survives a rename. It has already happened once, to the three artifacts replaced while v0.1.2 was still a draft, and again to the macOS `.dmg` files when the signing key was rotated. Since the snapshots record `asset_id`, a future one is visible rather than merely suspected.
 
 **History starts when the workflow did.** Everything before the first snapshot is unrecoverable — GitHub never stored it.
