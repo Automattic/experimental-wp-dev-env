@@ -92,6 +92,8 @@ Prefer the simplest fix for reproducible user-facing failures. Do not add defens
 
 When writing manual test instructions, inspect the current renderer flow first and distinguish actions that happen automatically after linking a ticket from controls used only to retry or refresh them. Do not tell a tester to click a control when the app already starts that operation.
 
+Every command you hand a person names the directory to run it from, or says that it does not matter. Every manual pass you ask for names the platform, Windows or macOS, or says that either works, and the exact build it runs against: the Buildkite build number and commit, or "the current head". A tester who has to ask either question has already lost the round trip the instructions were meant to save.
+
 When asked to add an existing pull request to an existing stack, preserve its commits and change its base to the head branch of the current top PR. Do not move commits into an earlier PR unless the user explicitly asks to rewrite the stack.
 
 ## Architecture notes (non-obvious)
