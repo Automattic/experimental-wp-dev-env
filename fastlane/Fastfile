@@ -21,6 +21,17 @@ BUILDS_FOLDER = File.join(PROJECT_ROOT_FOLDER, 'dist')
 
 before_all do |_lane|
   setup_ci # Fixes Keychain access on CI
+
+  # macOS 26 CI images don't ship the "Developer ID Certification Authority" G2
+  # intermediate, and `match` installs only the leaf. Without the intermediate in
+  # a search-list keychain, `security` can't build the chain and evaluates the
+  # identity as CSSMERR_TP_NOT_TRUSTED — electron-builder then silently skips
+  # signing. Install it into the temp keychain `setup_ci` just created.
+  if FastlaneCore::Helper.is_ci?
+    cert_path = File.join(Dir.tmpdir, 'DeveloperIDG2CA.cer')
+    sh('curl', '-fsSL', 'https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer', '-o', cert_path)
+    import_certificate(certificate_path: cert_path, keychain_name: 'fastlane_tmp_keychain')
+  end
 end
 
 desc 'Download the development signing certificates to this machine'

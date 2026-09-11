@@ -6,5 +6,6 @@
 export CI_TOOLKIT=automattic/a8c-ci-toolkit#6.1.0
 export NVM_PLUGIN=automattic/nvm#0.6.0
 export DOCKER_PLUGIN=docker#v5.13.0
-export NODE_DOCKER_IMAGE=node:$(sed 's/^v//' .nvmrc)-trixie
 export IMAGE_ID=xcode-26.6
+NODE_DOCKER_IMAGE=node:$(sed 's/^v//' .nvmrc)-trixie
+export NODE_DOCKER_IMAGE
