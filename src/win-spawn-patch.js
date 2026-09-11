@@ -76,10 +76,23 @@ function quoteForCmd(value) {
 }
 
 // Clones the caller's env (or inherits process.env) and forces Electron into
-// Node mode, since the command we redirect to is electron.exe.
-function withNodeMode(options) {
+// Node mode, since the command we redirect to is electron.exe. When the app
+// installed the runtime-identity preload, the flag it acts on travels too.
+function withNodeMode(options, nodeCompatPath) {
 	const baseEnv = options && options.env ? options.env : process.env;
-	return { ...options, env: { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' } };
+	const env = { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' };
+	if (nodeCompatPath) env.WPTK_NODE_COMPAT = '1';
+	return { ...options, env };
+}
+
+// The redirect below skips the node.cmd shim, and with it the `--require` of
+// electron-node-compat.js the shim carries (#275, see node-shims.cjs). Without
+// re-attaching it here a tool reached through `spawn('node', …)` sees
+// `versions.electron` again and misreads its own arguments. An argument, not
+// NODE_OPTIONS, for the reason given in node-shims.cjs; a native path, because
+// a quoted argument is literal and nothing re-tokenises it.
+function preloadArgs(nodeCompatPath) {
+	return nodeCompatPath ? ['--require', nodeCompatPath] : [];
 }
 
 // Decides how a child_process call must be rewritten. Returns null when the call
@@ -92,6 +105,7 @@ function resolveSpawnTarget({
 	execPath = process.execPath,
 	npmCliPath = null,
 	npxCliPath = null,
+	nodeCompatPath = null,
 	env = process.env,
 	lookup = defaultLookup
 } = {}) {
@@ -103,13 +117,13 @@ function resolveSpawnTarget({
 	// Preferred path: call Electron's binary directly. No shell, so no quoting
 	// hazard, and it works even when the .cmd shim is missing entirely.
 	if (name === 'node') {
-		return { file: execPath, args: [...args], options: withNodeMode(options) };
+		return { file: execPath, args: [...preloadArgs(nodeCompatPath), ...args], options: withNodeMode(options, nodeCompatPath) };
 	}
 	if (name === 'npm' && npmCliPath) {
-		return { file: execPath, args: [npmCliPath, ...args], options: withNodeMode(options) };
+		return { file: execPath, args: [...preloadArgs(nodeCompatPath), npmCliPath, ...args], options: withNodeMode(options, nodeCompatPath) };
 	}
 	if (name === 'npx' && npxCliPath) {
-		return { file: execPath, args: [npxCliPath, ...args], options: withNodeMode(options) };
+		return { file: execPath, args: [...preloadArgs(nodeCompatPath), npxCliPath, ...args], options: withNodeMode(options, nodeCompatPath) };
 	}
 
 	// A bare `tar` goes to Windows's bsdtar, which understands drive letters. An
@@ -183,7 +197,8 @@ function applyPatch(childProcess = require('child_process'), config = {}) {
 if (process.env.WPTK_SPAWN_PATCH === '1') {
 	applyPatch(require('child_process'), {
 		npmCliPath: process.env.WPTK_NPM_CLI || null,
-		npxCliPath: process.env.WPTK_NPX_CLI || null
+		npxCliPath: process.env.WPTK_NPX_CLI || null,
+		nodeCompatPath: process.env.WPTK_NODE_COMPAT_PATH || null
 	});
 }
 

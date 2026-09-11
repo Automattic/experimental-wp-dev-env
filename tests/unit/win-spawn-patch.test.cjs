@@ -61,6 +61,28 @@ test('npm and npx are redirected to their JS CLIs', () => {
 	assert.deepEqual(npx.args, [WIN.npxCliPath, 'wp-scripts', 'build']);
 });
 
+// The redirect bypasses the node.cmd shim, so the runtime-identity preload the
+// shim carries (#275) has to be re-attached here or a tool started this way sees
+// `versions.electron` again and misreads its arguments.
+test('the node, npm and npx redirects carry the compat preload when the app installed one', () => {
+	const compat = 'C:\\shims\\electron-node-compat.js';
+	const node = resolveSpawnTarget({ ...WIN, nodeCompatPath: compat, file: 'node', args: ['-e', '1'] });
+	assert.deepEqual(node.args, ['--require', compat, '-e', '1']);
+	assert.equal(node.options.env.WPTK_NODE_COMPAT, '1');
+
+	const npm = resolveSpawnTarget({ ...WIN, nodeCompatPath: compat, file: 'npm', args: ['ci'] });
+	assert.deepEqual(npm.args, ['--require', compat, WIN.npmCliPath, 'ci']);
+
+	const npx = resolveSpawnTarget({ ...WIN, nodeCompatPath: compat, file: 'npx', args: ['x'] });
+	assert.deepEqual(npx.args, ['--require', compat, WIN.npxCliPath, 'x']);
+});
+
+test('without a compat preload the redirects add no --require and no flag', () => {
+	const node = resolveSpawnTarget({ ...WIN, file: 'node', args: ['x.js'] });
+	assert.deepEqual(node.args, ['x.js']);
+	assert.equal(node.options.env.WPTK_NODE_COMPAT, undefined);
+});
+
 test('npm falls through to the shell branch when no npm CLI path is known', () => {
 	const target = resolveSpawnTarget({
 		...WIN,

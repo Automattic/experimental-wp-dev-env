@@ -214,6 +214,40 @@ test('buildChildEnv leaves NODE_OPTIONS alone off Windows or without a patch', (
 	assert.equal(noPatch.WPTK_SPAWN_PATCH, undefined);
 });
 
+// The spawn patch re-attaches the compat preload to the spawns it redirects
+// (see win-spawn-patch.js), and this is how it learns where the file is. A
+// native path: it travels as an argument, never through NODE_OPTIONS, so the
+// backslash problem above does not apply.
+test('buildChildEnv hands the spawn patch the compat preload path on Windows only', () => {
+	const win = buildChildEnv({
+		shimDir: 'C:\\shims',
+		baseEnv: { PATH: 'C:\\Windows' },
+		platform: 'win32',
+		execPath: 'C:\\App\\App.exe',
+		spawnPatchPath: 'C:\\shims\\win-spawn-patch.js',
+		nodeCompatPath: 'C:\\shims\\electron-node-compat.js'
+	});
+	assert.equal(win.WPTK_NODE_COMPAT_PATH, 'C:\\shims\\electron-node-compat.js');
+
+	const noCompat = buildChildEnv({
+		shimDir: 'C:\\shims',
+		baseEnv: { PATH: 'C:\\Windows' },
+		platform: 'win32',
+		execPath: 'C:\\App\\App.exe',
+		spawnPatchPath: 'C:\\shims\\win-spawn-patch.js'
+	});
+	assert.equal(noCompat.WPTK_NODE_COMPAT_PATH, undefined);
+
+	const posix = buildChildEnv({
+		shimDir: '/tmp/shims',
+		baseEnv: { PATH: '/usr/bin' },
+		platform: 'darwin',
+		execPath: '/App/Electron',
+		nodeCompatPath: '/tmp/shims/electron-node-compat.js'
+	});
+	assert.equal(posix.WPTK_NODE_COMPAT_PATH, undefined);
+});
+
 test('buildChildEnv applies extraEnv last so the retry can relax engines', () => {
 	const env = buildChildEnv({
 		shimDir: '/shims',
