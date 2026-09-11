@@ -1,6 +1,6 @@
 ## WordPress Contributor Toolkit (Electron)
 
-[![Unit tests](https://github.com/WordPress/contributor-toolkit/actions/workflows/unit-tests.yml/badge.svg?branch=trunk)](https://github.com/WordPress/contributor-toolkit/actions/workflows/unit-tests.yml) [![Latest release](https://img.shields.io/github/v/release/WordPress/contributor-toolkit)](https://github.com/WordPress/contributor-toolkit/releases/latest) [![Downloads](https://img.shields.io/github/downloads/WordPress/contributor-toolkit/total)](https://github.com/WordPress/contributor-toolkit/releases)
+[![Unit tests](https://github.com/WordPress/contributor-toolkit/actions/workflows/unit-tests.yml/badge.svg?branch=trunk)](https://github.com/WordPress/contributor-toolkit/actions/workflows/unit-tests.yml) [![Latest release](https://img.shields.io/github/v/release/WordPress/contributor-toolkit)](https://github.com/WordPress/contributor-toolkit/releases/latest) [![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FWordPress%2Fcontributor-toolkit%2Fmetrics%2Fbadge.json)](https://github.com/WordPress/contributor-toolkit/blob/trunk/STATS.md)
 
 Make WordPress posts:
 - [WordPress Core Dev Environment Toolkit: A Faster Path to Your First Core Contribution](https://make.wordpress.org/core/2026/04/16/wordpress-core-dev-environment-toolkit-a-faster-path-to-your-first-core-contribution/) (April 2026)
