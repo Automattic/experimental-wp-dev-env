@@ -1,4 +1,4 @@
-date,tag,asset,downloads
+date,tag,asset,downloads,asset_id
 2026-07-31,"v0.1.2","wordpress-contributor-toolkit-0.1.2-linux-x64.AppImage",0
 2026-07-31,"v0.1.2","wordpress-contributor-toolkit-0.1.2-mac-arm64.dmg",1
 2026-07-31,"v0.1.2","wordpress-contributor-toolkit-0.1.2-win-x64.exe",0
@@ -98,3 +98,20 @@ date,tag,asset,downloads
 2026-09-07,"v0.1.1","WordPress.Contributor.Toolkit-0.1.0.AppImage",20
 2026-09-07,"v0.1.0","linux-release-arm64.AppImage",5
 2026-09-07,"v0.1.0","windows-release-intel.exe",31
+2026-09-11,"v1.0.1","wordpress-contributor-toolkit-1.0.1-linux-x86_64.AppImage",7,523882860
+2026-09-11,"v1.0.1","wordpress-contributor-toolkit-1.0.1-mac-arm64.dmg",17,523882858
+2026-09-11,"v1.0.1","wordpress-contributor-toolkit-1.0.1-win-x64.exe",17,523882861
+2026-09-11,"v1.0.0","wordpress-contributor-toolkit-1.0.0-linux-x86_64.AppImage",11,514457583
+2026-09-11,"v1.0.0","wordpress-contributor-toolkit-1.0.0-win-x64.exe",33,514457590
+2026-09-11,"v1.0.0-rc.2","wordpress-contributor-toolkit-1.0.0-rc.2-linux-x86_64.AppImage",5,513010829
+2026-09-11,"v1.0.0-rc.2","wordpress-contributor-toolkit-1.0.0-rc.2-win-x64.exe",7,513010827
+2026-09-11,"v1.0.0-rc.1","wordpress-contributor-toolkit-1.0.0-rc.1-linux-x86_64.AppImage",3,511314891
+2026-09-11,"v1.0.0-rc.1","wordpress-contributor-toolkit-1.0.0-rc.1-win-x64.exe",8,511316421
+2026-09-11,"v1.0.0-beta.1","wordpress-contributor-toolkit-1.0.0-beta.1-linux-x86_64.AppImage",2,508847963
+2026-09-11,"v1.0.0-beta.1","wordpress-contributor-toolkit-1.0.0-beta.1-win-x64.exe",4,508848609
+2026-09-11,"v0.1.2","wordpress-contributor-toolkit-0.1.2-linux-x64.AppImage",0,496827465
+2026-09-11,"v0.1.2","wordpress-contributor-toolkit-0.1.2-win-x64.exe",1,496827955
+2026-09-11,"v0.1.1","dist_WordPress.Contributor.Toolkit.Setup.0.1.0.exe",7,313931996
+2026-09-11,"v0.1.1","WordPress.Contributor.Toolkit-0.1.0.AppImage",20,313941677
+2026-09-11,"v0.1.0","linux-release-arm64.AppImage",6,302398952
+2026-09-11,"v0.1.0","windows-release-intel.exe",32,302399007
