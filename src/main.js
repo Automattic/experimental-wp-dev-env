@@ -1406,22 +1406,30 @@ async function appliedPatchSubmissionRefusal(sitePath) {
  * that read, is the shape that loses whatever another flow wrote in between
  * (#172).
  *
+ * Against a named branch, like `writeWorkMetaOn` and for the same reason: the
+ * caller that needs this has the ref in hand and has already refused if it is
+ * trunk, so re-deriving it from HEAD would spend a Git spawn to ask a question
+ * that is already answered and could answer it differently.
+ *
  * @param {string}                    sitePath
+ * @param {string}                    ref
  * @param {(work: Object) => ?Object} change   Given the current work meta, the patch to merge, or null to write nothing.
  */
-async function changeWorkMeta(sitePath, change) {
-    const { ref } = await activeBranch(sitePath);
+async function changeWorkMetaOn(sitePath, ref, change) {
     const scope = await workMetaScope(sitePath, ref);
     await changeSiteMeta(sitePath, (m) => {
         if (!scope) {
             const patch = change(m);
             return patch ? { ...m, ...patch } : m;
         }
-        const branches = { ...(m.branches || {}) };
-        const patch = change(branches[scope] || {});
+        const branches = m.branches || {};
+        // The scope was resolved before the store was awaited, so the entry it
+        // named can have been deleted since. Re-creating it here would leave a
+        // branch record holding this one field and no branch point.
+        if (!branches[scope]) return m;
+        const patch = change(branches[scope]);
         if (!patch) return m;
-        branches[scope] = { ...branches[scope], ...patch };
-        return { ...m, branches };
+        return { ...m, branches: { ...branches, [scope]: { ...branches[scope], ...patch } } };
     });
 }
 
@@ -2605,7 +2613,7 @@ ipcMain.handle('branches:rebase', async (event, sitePath) => withRegisteredSite(
 		// resolving the scope is a Git spawn, and an apply or a discard landing
 		// in that window used to be replaced by this record, leaving a revert
 		// banner for a patch that is not there (#172).
-		await changeWorkMeta(sitePath, (work) => (work.appliedPatch && work.appliedPatch.text
+		await changeWorkMetaOn(sitePath, ref, (work) => (work.appliedPatch && work.appliedPatch.text
 			? { appliedPatch: { ...work.appliedPatch, text: null } }
 			: null));
 	}

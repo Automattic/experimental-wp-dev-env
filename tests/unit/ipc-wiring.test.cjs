@@ -2964,6 +2964,7 @@ test('a rebase does not restore an applied-patch record a discard cleared while 
 			const { rebase, discard, meta } = await run(holdAt);
 			assert.equal(rebase.ok, true, 'the rebase itself succeeded');
 			const entry = meta.branches['ticket/61002'];
+			assert.equal(entry.baseOid, 'new', 'the rebase still wrote its own record, so this run staged a real overlap');
 			if (discard && discard.ok) {
 				cleared += 1;
 				assert.equal(entry.appliedPatch, null,
