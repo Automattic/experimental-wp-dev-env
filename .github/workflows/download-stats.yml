@@ -2,8 +2,9 @@
 #
 # GitHub exposes only a running total per asset (`download_count`) and no history endpoint, so a
 # trend can only exist if we write it down ourselves. The counter is also destroyed when an asset
-# is deleted and re-uploaded — renaming a published file restarts it at zero — which makes these
-# snapshots the only durable record.
+# is deleted and re-uploaded (renaming a published file restarts it at zero), which makes these
+# snapshots the only durable record: the README badge is computed from them, by
+# `scripts/download-total.cjs`, precisely because the live API can no longer produce the number.
 #
 # The data lives on `metrics`, an orphan branch sharing no history with trunk: the commit stays
 # out of trunk's log, and the branch can be deleted without touching anything else.
@@ -44,6 +45,11 @@ jobs:
       # token that can push to any branch, trunk included. A SHA cannot be repointed.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # The job checks out `metrics` below, an orphan branch that holds only the data files, so
+      # the script has to be taken off trunk before the working tree stops containing it.
+      - name: Stage the badge script outside the working tree
+        run: cp scripts/download-total.cjs "$RUNNER_TEMP/download-total.cjs"
+
       - name: Record today's counts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,22 +73,34 @@ jobs:
           DATE=$(date -u +%F)
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases" > releases.json
 
-          [ -f downloads.csv ] || echo 'date,tag,asset,downloads' > downloads.csv
+          HEADER='date,tag,asset,downloads,asset_id'
+          [ -f downloads.csv ] || echo "$HEADER" > downloads.csv
+
+          # The asset id column was added later. Older rows have four fields and stay that way:
+          # the id they were taken without cannot be recovered, and the reader falls back to the
+          # asset name for them.
+          if [ "$(head -n 1 downloads.csv)" != "$HEADER" ]; then
+            { echo "$HEADER"; tail -n +2 downloads.csv; } > downloads.next
+            mv -f downloads.next downloads.csv
+          fi
 
           # A manual re-run replaces the day's rows instead of duplicating them.
           grep -v "^$DATE," downloads.csv > downloads.next
           mv -f downloads.next downloads.csv
 
           # One row per asset per day: which platform people take is the interesting part, and a
-          # single total cannot be broken back down later.
-          jq -r '.[] | .tag_name as $tag | .assets[] | [$tag, .name, .download_count] | @csv' \
+          # single total cannot be broken back down later. The asset id goes in because the
+          # counter belongs to the upload, not to the filename. Re-uploading a file under the
+          # same name restarts it, and the id is the only thing that says so.
+          jq -r '.[] | .tag_name as $tag | .assets[] | [$tag, .name, .download_count, .id] | @csv' \
             releases.json | sed "s/^/$DATE,/" >> downloads.csv
 
-          # A shields.io endpoint badge can read this, so the README's number comes from data we
-          # control rather than a live third-party query.
-          TOTAL=$(jq '[.[].assets[].download_count] | add // 0' releases.json)
-          printf '{"schemaVersion":1,"label":"downloads","message":"%s","color":"blue"}\n' \
-            "$TOTAL" > badge.json
+          # The README's badge reads this file, so the number it shows is computed from the full
+          # history rather than from whatever the API happens to still be counting today. It
+          # covers stable tags only and includes assets that have since been withdrawn, which
+          # the live GitHub total can do neither of. See scripts/download-total.cjs.
+          TOTAL=$(node "$RUNNER_TEMP/download-total.cjs" downloads.csv)
+          node "$RUNNER_TEMP/download-total.cjs" downloads.csv --badge > badge.json
 
           rm releases.json
 
