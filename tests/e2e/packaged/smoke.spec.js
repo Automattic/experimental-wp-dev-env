@@ -118,8 +118,16 @@ const EXPECTED_API_KEYS = [
  * optional, and the runtime now carries a Windows-specific file-lock path that
  * requires it. Excluding Windows today would skip the one failure this
  * assertion exists to catch, on the platform where it is most likely.
+ *
+ * `npm/package.json` is spelled as the subpath the app itself resolves, in
+ * four places (`src/main.js`, `src/install-runner.js`, `src/script-runner.js`),
+ * to find the bundled npm CLI it runs installs and build scripts with. A
+ * contributor with no npm on the machine is the whole premise of this app, so
+ * losing it from the payload breaks the first thing they do — and the
+ * allow-list in `build.files` is now the single statement of what ships, which
+ * makes this the place to prove it still does.
  */
-const REQUIRED_MODULES = [ '@wp-playground/cli', 'fs-ext-extra-prebuilt', 'dugite' ];
+const REQUIRED_MODULES = [ '@wp-playground/cli', 'fs-ext-extra-prebuilt', 'dugite', 'npm/package.json' ];
 
 /**
  * electron-builder names the output directory after the platform *and* arch, so
