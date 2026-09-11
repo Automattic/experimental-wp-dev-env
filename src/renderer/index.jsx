@@ -2002,6 +2002,13 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
       if (code === 0) { try { await window.api.markSiteInitialized(sitePath); } catch {} onInitialized(sitePath); }
       try { await loadStatus(); } catch {}
       if (onDone) onDone({ code });
+    }).catch((error) => {
+      // A start that never got as far as a run id, so no done event is coming
+      // for it (#43): without this the button stays spinning on a run that does
+      // not exist. Same shape as runScript's catch.
+      appendNpm(`\nFailed to start npm install: ${error && error.message ? error.message : String(error)}\n`);
+      setInstalling(false);
+      if (onDone) onDone({ code: -1 });
     });
   }, [appendNpm, ensureStick, loadStatus, onInitialized, sitePath]);
 

@@ -60,7 +60,10 @@ test('isStableTag rejects the semver prerelease suffix', () => {
 	assert.equal(isStableTag('v1.1.0'), true);
 });
 
-test('isStableTag keeps v0.1.1, which GitHub flags as a prerelease by mistake', () => {
+test('isStableTag keeps v0.1.1, whose assets are the v0.1.0 binaries', () => {
+	// GitHub flags that tag as a prerelease and it was never published as a release, but the
+	// files under it are v0.1.0 builds. Filtering on the flag would drop 42 downloads of the
+	// app as it then stood.
 	assert.equal(isStableTag('v0.1.1'), true);
 });
 

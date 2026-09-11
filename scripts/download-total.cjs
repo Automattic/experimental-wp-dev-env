@@ -5,8 +5,8 @@
 // does, gets the number wrong twice over.
 //
 // It undercounts, because the counter belongs to the asset and dies with it. Four macOS `.dmg`
-// files were deleted and re-uploaded when the signing key was rotated, so 89 downloads that
-// really happened are gone from the API. They survive only in the snapshots, which is the whole
+// files on the shipped releases were deleted and re-uploaded when the signing key was rotated,
+// so 89 downloads that really happened are gone from the API. They survive only in the snapshots, which is the whole
 // reason the snapshots exist.
 //
 // And it overcounts, because it includes release candidates and betas. A download of `rc.1` two
@@ -25,8 +25,13 @@ function assetKey({ id, tag, asset }) {
 	return id ? `id:${id}` : JSON.stringify([tag, asset]);
 }
 
-// A prerelease is the semver suffix, not GitHub's `prerelease` flag: v0.1.1 is flagged
-// prerelease on the API and is a real release with real users.
+// A prerelease is the semver suffix, not GitHub's `prerelease` flag. The two disagree on
+// `v0.1.1`, and the flag is the one that loses downloads: GitHub published that tag as a
+// prerelease titled "v0.1.1 draft", never as a release, but its three assets are v0.1.0 binaries
+// (`...Setup.0.1.0.exe`, `...-0.1.0.AppImage`, `...-0.1.0-arm64.dmg`). Their downloads are
+// downloads of the app as it then stood, so they belong in the total, and they belong to v0.1.0.
+// Filtering on the flag would silently drop 42 of them. The four releases this project has
+// shipped are v0.1.0, v0.1.2, v1.0.0 and v1.0.1.
 function isStableTag(tag) {
 	return !tag.replace(/^v/, '').includes('-');
 }
