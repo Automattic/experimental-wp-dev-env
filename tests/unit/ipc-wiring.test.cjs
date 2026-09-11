@@ -2870,7 +2870,7 @@ test('linking a ticket does not roll back a rebase that lands while it switches 
 	}
 
 	const { accesses } = await run(Infinity);
-	assert.ok(accesses >= 2, `the link writes the store more than once (${accesses})`);
+	assert.ok(accesses >= 1, 'the link reaches the store at all, or there is no window to stage');
 
 	let moved = 0;
 	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
@@ -2891,6 +2891,92 @@ test('linking a ticket does not roll back a rebase that lands while it switches 
 		});
 	}
 	assert.ok(moved >= 1, 'at least one hold has to be late enough for the rebase to run, or this proves nothing');
+});
+
+
+// The last writer of this shape, and the one that costs a contributor a patch
+// rather than a base. A rebase keeps the applied-patch record and drops only
+// its text, and it used to read that record, resolve the write scope (a Git
+// spawn), and then write back what it had read. A discard or an apply landing
+// in that window was replaced by the record from before it: "PR #8913 applied ·
+// Revert" over a tree the discard had just emptied, and a Revert that cannot
+// find its hunks.
+test('a rebase does not restore an applied-patch record a discard cleared while it ran (issue #172)', async (t) => {
+	const flows = new AsyncLocalStorage();
+
+	async function run(holdAt) {
+		const rebaseOntoTrunk = spy(async () => ({ to: 'new', from: 'old', rebased: true }));
+		const discardChanges = spy(async () => ({ discarded: true }));
+		const settings = fakeSettingsStore({
+			sites: ['/sites/wp'],
+			siteMeta: {
+				'/sites/wp': {
+					tracTicket: 61002,
+					currentBranch: 'ticket/61002',
+					branches: {
+						'ticket/61002': {
+							tracTicket: 61002,
+							baseOid: 'old',
+							appliedPatch: { label: 'PR #8913', appliedAt: '2026-01-01T00:00:00.000Z', files: ['a.php'], text: 'STORED' }
+						}
+					}
+				}
+			}
+		});
+		const { getStore: storeOf } = settings.stubs['./settings-store'];
+		let accesses = 0;
+		let discard = null;
+		const getStore = async () => {
+			if (flows.getStore() === 'rebase') {
+				accesses += 1;
+				if (accesses === holdAt) {
+					discard = flows.run('discard', () => main.invoke('git:discard-changes', '/sites/wp')).catch((e) => e);
+					await Promise.race([
+						discard,
+						new Promise((_r, reject) => setTimeout(
+							() => reject(new Error(`the discard never finished inside store access ${holdAt}`)),
+							4000
+						).unref())
+					]);
+				}
+			}
+			return storeOf();
+		};
+		const main = loadMain({
+			stubs: {
+				...silentLogging(),
+				'./settings-store': { getStore },
+				'./trunk-update': { discardChanges },
+				'./ticket-branches': { rebaseOntoTrunk, currentBranchName: async () => 'ticket/61002' }
+			}
+		});
+
+		const rebase = await flows.run('rebase', () => main.invoke('branches:rebase', '/sites/wp'));
+		return { accesses, rebase, discard: await discard, meta: settings.values.siteMeta['/sites/wp'] };
+	}
+
+	const { accesses } = await run(Infinity);
+	assert.ok(accesses >= 1, 'the rebase reaches the store at all, or there is no window to stage');
+
+	let cleared = 0;
+	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
+		await t.test(`the discard lands in store access ${holdAt} of ${accesses}`, async () => {
+			const { rebase, discard, meta } = await run(holdAt);
+			assert.equal(rebase.ok, true, 'the rebase itself succeeded');
+			const entry = meta.branches['ticket/61002'];
+			if (discard && discard.ok) {
+				cleared += 1;
+				assert.equal(entry.appliedPatch, null,
+					'the discard emptied the tree, so nothing may put its record back');
+			} else {
+				// Refused before it wrote, so the record is the rebase's own:
+				// kept for the #328 ownership guard, with its text dropped.
+				assert.equal(entry.appliedPatch.label, 'PR #8913');
+				assert.equal(entry.appliedPatch.text, null);
+			}
+		});
+	}
+	assert.ok(cleared >= 1, 'some hold has to let the discard through, or this proves nothing');
 });
 
 // The migration to the #108 branch shape is the one write that cannot be a
@@ -3365,12 +3451,14 @@ test('a ticket started while a trunk update is finishing keeps its recorded base
 	}
 
 	const { accesses } = await run(Infinity);
-	assert.ok(accesses >= 2, `the finishing update writes the store more than once (${accesses})`);
+	assert.ok(accesses >= 1, 'the finishing update reaches the store at all, or there is no window to stage');
 
 	for (let holdAt = 1; holdAt <= accesses; holdAt += 1) {
 		await t.test(`the link lands in store access ${holdAt} of ${accesses}`, async () => {
 			const { link, meta } = await run(holdAt);
 			assert.equal(link && link.ok, true, 'the link itself succeeded');
+			assert.equal(meta.branches['ticket/59234'].updateIncomplete, true,
+				'the update still wrote its own record after the hold, so this run staged a real overlap');
 			assert.equal(meta.branches['ticket/60002'] && meta.branches['ticket/60002'].baseOid, 'fresh',
 				'the new branch\'s base is what every patch for it is measured against');
 			assert.equal(meta.branches['ticket/59234'].baseOid, 'abc', 'and the other branch kept its own');

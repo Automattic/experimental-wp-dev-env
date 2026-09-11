@@ -1119,7 +1119,14 @@ async function migrateSiteToBranches(sitePath) {
         // `branches:rebase` would refuse a ticket whose base is on record as
         // having none.
         const current = await readSiteMeta(sitePath);
-        if (current.branches) return current;
+        if (current.branches) {
+            // Logged even though it is benign: what this branch tests is the
+            // record, not the error, so a genuine failure that happens to
+            // coincide with another flow finishing the migration would
+            // otherwise leave nothing anywhere.
+            logEvent('branches', `migration of ${describeRefused(sitePath)} was finished by another flow first — ${String(e && e.message ? e.message : e)}`);
+            return current;
+        }
         // A site that cannot be branched right now — directory on a volume that
         // is not mounted, a clone that never finished — keeps working exactly as
         // it did before. Nothing is persisted, so the next attempt retries:
@@ -1387,6 +1394,35 @@ async function appliedPatchSubmissionRefusal(sitePath) {
         reason: 'applied-patch',
         error: `${label} is applied. Revert it before submitting this checkout as your own work.`
     };
+}
+
+/**
+ * A work-meta change computed from the work meta itself, applied at the moment
+ * of the write instead of from a read taken before it.
+ *
+ * Which scope the write lands in is the one part that cannot be answered
+ * without yielding, so it is answered first; everything after it is a single
+ * read-change-write. The alternative, reading the work meta and deciding from
+ * that read, is the shape that loses whatever another flow wrote in between
+ * (#172).
+ *
+ * @param {string}                    sitePath
+ * @param {(work: Object) => ?Object} change   Given the current work meta, the patch to merge, or null to write nothing.
+ */
+async function changeWorkMeta(sitePath, change) {
+    const { ref } = await activeBranch(sitePath);
+    const scope = await workMetaScope(sitePath, ref);
+    await changeSiteMeta(sitePath, (m) => {
+        if (!scope) {
+            const patch = change(m);
+            return patch ? { ...m, ...patch } : m;
+        }
+        const branches = { ...(m.branches || {}) };
+        const patch = change(branches[scope] || {});
+        if (!patch) return m;
+        branches[scope] = { ...branches[scope], ...patch };
+        return { ...m, branches };
+    });
 }
 
 async function writeWorkMeta(sitePath, patch) {
@@ -2564,8 +2600,14 @@ ipcMain.handle('branches:rebase', async (event, sitePath) => withRegisteredSite(
 		// with it. Its text goes: reverse-applying hunks written against the
 		// old trunk cannot be trusted on the new one, and a record without a
 		// text is exactly "applied, not revertable" to site:status.
-		const { appliedPatch } = await readWorkMeta(sitePath);
-		if (appliedPatch && appliedPatch.text) await writeWorkMeta(sitePath, { appliedPatch: { ...appliedPatch, text: null } });
+		//
+		// Decided at the moment of the write, not from a read taken before it:
+		// resolving the scope is a Git spawn, and an apply or a discard landing
+		// in that window used to be replaced by this record, leaving a revert
+		// banner for a patch that is not there (#172).
+		await changeWorkMeta(sitePath, (work) => (work.appliedPatch && work.appliedPatch.text
+			? { appliedPatch: { ...work.appliedPatch, text: null } }
+			: null));
 	}
 	return { ok: true, ticket: ticketIdFromRef(ref), from: result.from, to: result.to, rebased: result.rebased, parked: result.parked };
 }));
