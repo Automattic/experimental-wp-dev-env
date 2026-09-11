@@ -1359,9 +1359,45 @@ async function appliedPatchSubmissionRefusal(sitePath) {
 }
 
 async function writeWorkMeta(sitePath, patch) {
-    const { ref, meta } = await activeBranch(sitePath);
-    if (ref === TRUNK || !meta) return mergeSiteMeta(sitePath, patch);
-    return mergeBranchMeta(sitePath, ref, patch);
+    const { ref } = await activeBranch(sitePath);
+    return writeWorkMetaOn(sitePath, ref, patch);
+}
+
+/**
+ * The same write, against a branch named rather than read from HEAD.
+ *
+ * Every caller but one wants the branch that is checked out. The trunk update
+ * is the exception: it parks the ticket before it writes, so by then HEAD says
+ * trunk while the work the flag describes is on the branch it is about to
+ * return to (#419).
+ *
+ * @param {string} sitePath
+ * @param {string} ref
+ * @param {Object} patch
+ */
+async function writeWorkMetaOn(sitePath, ref, patch) {
+    const scope = await workMetaScope(sitePath, ref);
+    return scope ? mergeBranchMeta(sitePath, scope, patch) : mergeSiteMeta(sitePath, patch);
+}
+
+/**
+ * Which scope a work-meta write for `ref` lands in, branch or site, without
+ * writing — the same rule `readWorkMeta` reads by, so a caller that needs to
+ * know where the value it just wrote can be found does not have to guess.
+ *
+ * A ref with no entry of its own has nowhere per-branch to go: a site that
+ * predates #108, one whose migration could not run, a branch the contributor's
+ * own Git client checked out. The site is where the value lives for those, and
+ * where the reader will look for it.
+ *
+ * @param {string} sitePath
+ * @param {string} ref
+ * @return {Promise<?string>} The branch, or null for the site.
+ */
+async function workMetaScope(sitePath, ref) {
+    if (ref === TRUNK) return null;
+    const m = await readSiteMeta(sitePath);
+    return (m.branches || {})[ref] ? ref : null;
 }
 
 async function mergeBranchMeta(sitePath, ref, patch) {
@@ -1591,10 +1627,47 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
             // HEAD has moved but install/build have not run yet: persist the
             // incomplete flag now so the state survives a crash or quit
             // mid-chain; the renderer clears it after a successful build.
-            await writeWorkMeta(sitePath, {
-                appliedPatch: null,
-                ...(result.upToDate ? {} : { updateIncomplete: true })
-            });
+            //
+            // On `branchBefore` rather than on HEAD, which the park has already
+            // moved to trunk: the build the renderer runs next ends after the
+            // return below, so it clears the flag on the ticket branch. Writing
+            // it where HEAD is now put it at site level, where nothing cleared
+            // it and it surfaced as a false "Update incomplete" banner the next
+            // time the contributor was on trunk (#419).
+            //
+            // Asked before the writes because both of the site-level ones below
+            // depend on it: a returning branch with no entry of its own reads
+            // and writes its work meta at site level, so for that one the site
+            // record is the branch's, not trunk's, and neither correction there
+            // is safe.
+            const workScope = await workMetaScope(sitePath, branchBefore);
+            if (!result.upToDate) {
+                await writeWorkMetaOn(sitePath, branchBefore, { updateIncomplete: true });
+            }
+
+            if (branchBefore === TRUNK || workScope) {
+                // Two corrections to trunk's own record, for two reasons.
+                //
+                // The patch: unlike the flag, it belongs to the tree the update
+                // reset, and that tree is trunk's. A ticket's patch went into
+                // its WIP commit when the park committed the worktree and comes
+                // back with the return checkout below, so the branch's record
+                // must survive — `branches:rebase` keeps it for the same
+                // reason, and #328 reads it to refuse publishing another
+                // author's hunks as your own.
+                //
+                // The flag: clear the copy earlier versions left here, so a
+                // site that already carries the false banner is not stuck with
+                // it. Only once the live flag is somewhere else, though: an
+                // up-to-date run wrote none, and what is here may be the
+                // failure path's own, which is real. One boolean per scope
+                // cannot tell that copy from a stale one, so this stays a
+                // one-time correction rather than growing a second field.
+                await mergeSiteMeta(sitePath, {
+                    appliedPatch: null,
+                    ...(workScope && !result.upToDate ? { updateIncomplete: false } : {})
+                });
+            }
 
             // Put the contributor back where they were. Without this the site
             // sits on trunk while the panel still names the ticket, every patch
@@ -1633,11 +1706,16 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
             if (stage === 'checkout') {
                 const patch = { updateIncomplete: true };
                 if (e && e.worktreeReset) patch.appliedPatch = null;
-                // Through writeWorkMeta, not mergeSiteMeta: both of these are
-                // per-branch under #108, and the site is on trunk here only
-                // because the park succeeded — a failure before it leaves the
-                // ticket checked out, where the site-level record is the wrong
-                // place for either.
+                // Through writeWorkMeta, which reads HEAD — and here that is the
+                // right question, unlike in the success path above (#419),
+                // because both failures that reach this line end where HEAD
+                // already is. The update's own checkout failed on trunk, and
+                // the recovery below leaves the contributor there, unlinked.
+                // A park whose checkout died arrives here too — `switchToBranch`
+                // tags that `stage: 'checkout'` as well — with HEAD still on the
+                // ticket, because Git moves it only once every file operation
+                // has succeeded; that flag belongs to the ticket, and HEAD says
+                // so. Neither is a case of writing where nobody will read.
                 try { await writeWorkMeta(sitePath, patch); } catch {}
             }
             sendLog(`\nUpdate failed during ${stage}: ${String(e && e.message ? e.message : e)}\n`);

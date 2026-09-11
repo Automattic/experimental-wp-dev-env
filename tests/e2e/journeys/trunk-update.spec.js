@@ -56,3 +56,81 @@ test( 'an update fetches from the site\'s origin, resets the checkout, rebuilds,
 	expect( meta.trunkOid ).toBe( newTip );
 	expect( meta.updateIncomplete ).toBeFalsy();
 } );
+
+/**
+ * Links a ticket through the panel, the way a contributor does.
+ *
+ * The same two clicks `ticket-branches.spec.js` documents at length; repeated
+ * rather than shared because a journey that reaches into another journey's file
+ * for its helpers stops being readable on its own, and this one needs only the
+ * happy path — nothing is linked when it runs.
+ *
+ * @param {Object} page
+ * @param {string} ticket
+ */
+async function linkTicket( page, ticket ) {
+	await page.getByLabel( 'Trac ticket number or URL' ).first().fill( ticket );
+	await page.getByRole( 'button', { name: 'Link ticket', exact: true } ).first().click();
+	await expect( page.getByText( `#${ ticket }`, { exact: true } ).first() ).toBeVisible( { timeout: 30_000 } );
+}
+
+/**
+ * The update run from a linked ticket, all the way back to trunk (#419).
+ *
+ * The journey above runs the same chain from trunk, where the flag that says
+ * "the code is new but the built assets are old" is written and cleared in the
+ * same place and nothing can disagree. From a ticket it is written after the
+ * park, while the app is on trunk, and cleared after the return, while it is on
+ * the ticket — two scopes, and the bug was that only one of them was ever
+ * cleared. Nothing below trunk's own level can see it: the layer-3 test proves
+ * the handlers write where they should, and this proves the contributor is not
+ * looking at a red banner after a build that succeeded.
+ *
+ * The step that reveals it is the last one. Everything is quiet until Unlink
+ * puts the site back on trunk, which is where the stale flag is read from.
+ *
+ * The tree is left clean deliberately: an uncommitted edit sends Update to
+ * latest trunk through the dirty-tree modal, which discards before it updates
+ * and is a different flow with its own coverage. Parking a clean ticket still
+ * moves the checkout both ways, which is all this needs.
+ */
+test( 'an update run from a linked ticket leaves no incomplete marker behind on trunk', async ( { session } ) => {
+	const site = await makeSite( session, { origin: true } );
+	const newTip = advanceOrigin( site.origin, { 'src/wp-login.php': NEWER_LOGIN } );
+	const { page } = await session.start( site.settings );
+	await session.acceptConfirms();
+
+	await expect( page.getByRole( 'button', { name: 'More', exact: true } ) ).toBeVisible( { timeout: 30_000 } );
+	await linkTicket( page, '60002' );
+	expect( currentBranch( site.dir ) ).toBe( 'ticket/60002' );
+
+	await page.getByRole( 'button', { name: 'More', exact: true } ).click();
+	await page.getByRole( 'menuitem', { name: 'Update to latest trunk', exact: true } ).click();
+
+	// INVARIANT — the chain ends where it does from trunk, and it ends with the
+	// contributor back on their ticket rather than stranded on trunk.
+	await expect( page.getByText( 'Updated to the latest trunk' ).first() ).toBeVisible( { timeout: 120_000 } );
+	await expect( page.getByText( 'Update incomplete', { exact: false } ) ).toHaveCount( 0 );
+	expect( currentBranch( site.dir ) ).toBe( 'ticket/60002' );
+	// And the ticket is still measured from where it started: the update moved
+	// trunk, it did not silently carry the branch forward. `branches:rebase` is
+	// what does that, when the contributor asks for it.
+	expect( read( site.dir, LOGIN ) ).not.toBe( NEWER_LOGIN );
+
+	await page.getByRole( 'button', { name: 'Unlink', exact: true } ).click();
+	await expect( page.getByLabel( 'Trac ticket number or URL' ).first() ).toBeVisible( { timeout: 30_000 } );
+
+	// INVARIANT — #419 itself. The build ran and succeeded minutes ago; trunk
+	// must not be offering to retry it.
+	expect( currentBranch( site.dir ) ).toBe( TRUNK );
+	expect( read( site.dir, LOGIN ) ).toBe( NEWER_LOGIN );
+	await expect( page.getByText( 'Update incomplete', { exact: false } ) ).toHaveCount( 0 );
+	await expect( page.getByRole( 'button', { name: 'Retry install & build', exact: true } ) ).toHaveCount( 0 );
+
+	// CHARACTERISATION — the store's side of the same thing: the snapshot moved,
+	// and neither scope is left claiming the site is mid-update.
+	const meta = session.readSettings().siteMeta[ site.dir ];
+	expect( meta.trunkOid ).toBe( newTip );
+	expect( meta.updateIncomplete ).toBeFalsy();
+	expect( meta.branches[ 'ticket/60002' ].updateIncomplete ).toBeFalsy();
+} );
