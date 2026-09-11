@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isAllowedExternalUrl, normalizeExternalUrl, describeRefusedUrl, openExternalUrl, ALLOWED_URL_SCHEMES } = require('../../src/external-url.js');
+const { normalizeExternalUrl, describeRefusedUrl, openExternalUrl, ALLOWED_URL_SCHEMES } = require('../../src/external-url.js');
 
 // Stands in for shell.openExternal, so "did this reach the OS?" is an assertion
 // rather than something the test has to take on trust.
@@ -102,10 +102,10 @@ test('junk input is refused rather than thrown', async () => {
 test('the scheme is read off the parsed URL, not the raw string', () => {
 	// Casing and leading whitespace are normalized by the URL parser before the
 	// comparison, so they are neither a false refusal nor a way past the guard.
-	assert.equal(isAllowedExternalUrl('HTTPS://example.com'), true);
-	assert.equal(isAllowedExternalUrl('  https://example.com'), true);
-	assert.equal(isAllowedExternalUrl('FILE:///etc/passwd'), false);
-	assert.equal(isAllowedExternalUrl('  file:///etc/passwd'), false);
+	assert.equal(normalizeExternalUrl('HTTPS://example.com'), 'https://example.com/');
+	assert.equal(normalizeExternalUrl('  https://example.com'), 'https://example.com/');
+	assert.equal(normalizeExternalUrl('FILE:///etc/passwd'), null);
+	assert.equal(normalizeExternalUrl('  file:///etc/passwd'), null);
 });
 
 test('the allow-list is only http and https', () => {
