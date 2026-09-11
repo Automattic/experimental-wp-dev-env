@@ -1940,7 +1940,7 @@ test('npm:run-script spawns the script runner through npm-runner too', async () 
 // in practice is the source file missing from the packaged bundle (a packaging
 // allow-list that forgot it), so it is the copy that fails here, not the temp
 // directory, which is why the shim writes would otherwise have gone ahead.
-test('npm:run-script refuses to start when the compat preload cannot be installed (#275)', async () => {
+test('npm:run-script refuses to start when the compat preload cannot be installed (#275, #43)', async () => {
 	const shimDir = path.join(os.tmpdir(), `electron-node-shims-${process.pid}`);
 	// A previous test in this file may have written a good set; the assertion
 	// below is about what this load writes.
@@ -1962,23 +1962,50 @@ test('npm:run-script refuses to start when the compat preload cannot be installe
 	});
 	const event = createIpcEvent();
 
-	await main.invokeWith('npm:run-script', event, '/sites/wp', 'build');
-	// The refusal is reported a turn later, like a spawn failure, so the handler
-	// has finished its bookkeeping before it is told the run is over.
-	await new Promise((resolve) => setTimeout(resolve, 0));
+	// Rejected, not streamed. The renderer subscribes to the log and done
+	// channels only after this invoke resolves (#43), so a failure reported
+	// through them before the run id exists reaches nobody, and the terminal
+	// waits for a completion event that was sent to no listener.
+	await assert.rejects(
+		main.invokeWith('npm:run-script', event, '/sites/wp', 'build'),
+		/preload/,
+		'the refusal did not reach the caller, or did not name the preload'
+	);
 
 	assert.equal(cp.spawned.length, 0, 'the runner was started into shims that carry no preload');
 	const shimName = process.platform === 'win32' ? 'node.cmd' : 'node';
 	assert.ok(!fs.existsSync(path.join(shimDir, shimName)), 'a node shim without the preload was written anyway');
-	const stderr = event.sent
-		.filter((m) => m.channel === 'npm:run-script:log' && m.payload.type === 'stderr')
-		.map((m) => m.payload.data)
-		.join('');
-	assert.match(stderr, /Failed to start/, 'the person who clicked the button was not told the run never started');
-	assert.match(stderr, /preload/, 'the reason does not name the preload');
-	const done = event.sent.find((m) => m.channel === 'npm:run-script:done');
-	assert.ok(done, 'the run was never settled, so the renderer waits forever');
-	assert.equal(done.payload.code, null);
+	assert.deepEqual(event.sent, [], 'a start that has no run id yet must not send correlated events');
+});
+
+// The install path reaches the same start, and a rejection there has its own
+// consequence: nothing sets `installing` back, so the wizard's button spins on
+// a run that does not exist. Asserted here because the renderer's catch cannot
+// be unit tested.
+test('npm:install refuses to start when the compat preload cannot be installed (#275, #43)', async () => {
+	fs.rmSync(path.join(os.tmpdir(), `electron-node-shims-${process.pid}`), { recursive: true, force: true });
+	const cp = stubbedSpawn();
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			...fakeSettingsStore().stubs,
+			'child_process': { spawn: cp.spawn },
+			'fs': {
+				copyFileSync(src, dest, ...rest) {
+					if (path.basename(src) === 'electron-node-compat.js') {
+						throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+					}
+					return fs.copyFileSync(src, dest, ...rest);
+				}
+			}
+		}
+	});
+	const event = createIpcEvent();
+
+	await assert.rejects(main.invokeWith('npm:install', event, '/sites/wp'), /preload/);
+
+	assert.equal(cp.spawned.length, 0);
+	assert.deepEqual(event.sent, [], 'a start that has no install id yet must not send correlated events');
 });
 
 test('npm:kill ends the script tree rather than signalling the runner alone', async (t) => {

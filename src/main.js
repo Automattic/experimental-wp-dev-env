@@ -2849,7 +2849,13 @@ const ENGINE_RETRY_NOTICE = '\n⚠ This site requires a newer Node.js than this 
 // installs that inherit this environment — wordpress-develop's Gruntfile calls
 // install-changed at load time, which execSync's its own `npm install` (#54).
 function runNpmWithEngineRetry({ runnerPath, args, cwd, onLog, onDone, register, logScope, retryOnEngineMismatch = false, relaxEnginesFromStart = false }) {
-	const start = (relaxEngines) => {
+	// `initial` is the first start, the one that happens inside the IPC handler
+	// before it has returned a run id. Nothing is listening on the log and done
+	// channels yet — the renderer subscribes after the invoke resolves (#43) —
+	// so a failure there is thrown for the handler to reject with, and reaches
+	// the contributor through the caller's own catch. A retry's failure happens
+	// later, with the listeners in place, and streams as usual.
+	const start = (relaxEngines, initial = false) => {
 		// Logged before the spawn: a child that fails to start at all (EPERM on
 		// Windows) produces no output, so without this the log would show nothing
 		// where the failure was.
@@ -2862,15 +2868,12 @@ function runNpmWithEngineRetry({ runnerPath, args, cwd, onLog, onDone, register,
 			});
 		} catch (err) {
 			// Synchronous, unlike a spawn failure: the shim directory refused to
-			// hand out shims without the compat preload (#275). Same surface as
-			// the 'error' path below, and settled a turn later for the same
-			// reason: the handler has not stored the run yet.
+			// hand out shims without the compat preload (#275).
 			logError(logScope, `could not start: ${String(err)}`);
+			if (initial) throw err;
+			logEvent(logScope, 'never started; shims not written');
 			onLog('stderr', `\nFailed to start: ${err && err.message ? err.message : String(err)}\n`);
-			setTimeout(() => {
-				logEvent(logScope, 'never started; shims not written');
-				onDone(null);
-			}, 0);
+			setTimeout(() => onDone(null), 0);
 			return;
 		}
 		register(child);
@@ -2943,7 +2946,7 @@ function runNpmWithEngineRetry({ runnerPath, args, cwd, onLog, onDone, register,
 			settle(code);
 		});
 	};
-	start(relaxEnginesFromStart);
+	start(relaxEnginesFromStart, true);
 }
 
 ipcMain.handle('npm:install', async (event, directoryPath) => {

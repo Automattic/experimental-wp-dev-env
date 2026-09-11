@@ -33,7 +33,7 @@ Run the review in `.github/instructions/code-review.instructions.md` against the
 
 Before reporting a GitHub workflow complete, verify every requested final state on GitHub — for example, distinguish a merged pull request from one that is merely closed, and confirm that an issue was closed by the intended pull request rather than only by a comment.
 
-CodeRabbit reviews every non-draft pull request to `trunk` against the same file, configured in `.coderabbit.yaml`. It comments only and never approves. That does not replace the author's pass: a finding fixed before the PR costs one message, the same finding on the PR costs a review cycle, and a human reviewer should not be the first reader of a diff the author never checked.
+CodeRabbit reviews a pull request against the same file when asked with `@coderabbitai review`, configured in `.coderabbit.yaml`; automatic review is off because the free open-source plan includes about one review per hour for the whole WordPress organisation. It comments only and never approves. That does not replace the author's pass: a finding fixed before the PR costs one message, the same finding on the PR costs a review cycle, and a human reviewer should not be the first reader of a diff the author never checked.
 
 That file carries the procedure as well as the standard. Follow it rather than improvising a review.
 
