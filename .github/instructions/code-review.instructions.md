@@ -14,15 +14,27 @@ CodeRabbit is configured to review every non-draft pull request to `trunk`; avai
 
 ## Running the review
 
-**1. Establish the diff.**
+**1. Establish the review scope and diff.**
 
 ```bash
-git fetch origin trunk
-git diff --stat origin/trunk...HEAD
-git diff origin/trunk...HEAD
+# For a PR:
+base="$(gh pr view --json baseRefName --jq .baseRefName)" || {
+  echo "Could not determine the PR base; verify it before continuing."
+  exit 1
+}
+# For a confirmed no-PR review, use `base=trunk` instead of the assignment above.
+git fetch origin "$base"
+git diff --stat "origin/$base"...HEAD
+git diff "origin/$base"...HEAD
+git status --short
+git diff
+git diff --cached
+git ls-files --others --exclude-standard
 ```
 
-Include uncommitted work if there is any (`git status --short`, `git diff`) — the author is about to commit it, so it is in scope.
+For a PR, its configured base is the comparison base — including when it is another PR in a stack. Without a PR, first confirm that state, then use `base=trunk` as shown; name that assumption in the report instead of claiming the review covers a future stacked PR. A failed PR lookup does not prove that no PR exists: stop and verify the base rather than silently choosing `trunk`. `git status` is an inventory, not an inspection: review unstaged and staged diffs separately, and inspect the contents of every untracked file (including files in an untracked directory) that is in scope. The author is about to commit local work, so it is in scope too; ignored files are not, unless the change deliberately affects ignore rules.
+
+When a deterministic check fails, do not assign it to the branch merely because a historical run on `trunk` was clean. Verify the selected base, compare the failure against it when attribution is uncertain, and report the uncertainty rather than treating a baseline failure as a branch finding.
 
 **2. Run the deterministic layer first**, so mechanical findings never reach the judgement pass:
 
@@ -31,7 +43,7 @@ npm run lint
 npm test
 ```
 
-Both are repo-wide and both are clean on `trunk` — the lint backlog was cleared in #117, which is why `lint.yml` runs `eslint .` rather than linting only the changed files. So any failure here belongs to the branch. Report both results plainly.
+Both are repo-wide, and the lint backlog was cleared in #117, which is why `lint.yml` runs `eslint .` rather than linting only the changed files. A failure belongs to the branch only after the selected base is verified; when attribution is uncertain, compare against that base and report the uncertainty. A historical clean run on `trunk` is not enough. Report both results plainly.
 
 If ESLint fails, `npm run lint:fix` handles the mechanical part. Check what it rewrote before committing: it is also repo-wide, so a rule that starts flagging untouched files would pull them into the diff. Do not hand-fix what the fixer handles.
 
