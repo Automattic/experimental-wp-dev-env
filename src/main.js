@@ -169,18 +169,19 @@ function ensureNodeShimDir() {
     // Copied out of the app bundle for the same reason as win-spawn-patch below:
     // a --require path inside app.asar is not reliably resolvable under
     // ELECTRON_RUN_AS_NODE. Must happen before the shims are written, since each
-    // of them names this path. A failure here is non-fatal on its own terms — the
-    // shims are still written, just without the preload — but it is what keeps a
-    // build from running away, so it is worth a log line.
+    // of them names this path. A failure here is fatal, not a degraded mode:
+    // shims without the preload are the state #275 describes, and a build
+    // launched into them hangs the machine rather than failing. The directory
+    // is forgotten so the next call tries again instead of handing out a
+    // remembered path with nothing in it; the caller reports a run that never
+    // started, which is the surface the person who clicked the button can see.
     try {
         const dest = path.join(nodeShimDir, 'electron-node-compat.js');
         fs.copyFileSync(path.join(__dirname, 'electron-node-compat.js'), dest);
         nodeCompatPath = dest;
     } catch (e) {
-        // The app's own log, not stderr: a packaged app has no terminal
-        // attached, so a stream write would go nowhere on the one path that
-        // decides whether a build can run away.
-        logError('app', `Could not install the Node compatibility preload: ${String(e && e.message ? e.message : e)}`);
+        nodeShimDir = null;
+        throw new Error(`Could not install the Node compatibility preload: ${String(e && e.message ? e.message : e)}`);
     }
     try {
         if (process.platform === 'win32') {
@@ -2686,10 +2687,25 @@ function runNpmWithEngineRetry({ runnerPath, args, cwd, onLog, onDone, register,
 		// Windows) produces no output, so without this the log would show nothing
 		// where the failure was.
 		logEvent(logScope, `spawn ${path.basename(runnerPath)} ${args.join(' ')} in ${cwd}${relaxEngines ? ' (relaxed engines)' : ''}`);
-		const child = spawnRunner(runnerPath, args, {
-			cwd,
-			extraEnv: relaxEngines ? RELAXED_ENGINES_ENV : {}
-		});
+		let child;
+		try {
+			child = spawnRunner(runnerPath, args, {
+				cwd,
+				extraEnv: relaxEngines ? RELAXED_ENGINES_ENV : {}
+			});
+		} catch (err) {
+			// Synchronous, unlike a spawn failure: the shim directory refused to
+			// hand out shims without the compat preload (#275). Same surface as
+			// the 'error' path below, and settled a turn later for the same
+			// reason: the handler has not stored the run yet.
+			logError(logScope, `could not start: ${String(err)}`);
+			onLog('stderr', `\nFailed to start: ${err && err.message ? err.message : String(err)}\n`);
+			setTimeout(() => {
+				logEvent(logScope, 'never started; shims not written');
+				onDone(null);
+			}, 0);
+			return;
+		}
 		register(child);
 
 		const detector = createEngineMismatchDetector();

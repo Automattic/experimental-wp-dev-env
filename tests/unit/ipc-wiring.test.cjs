@@ -1933,6 +1933,53 @@ test('npm:run-script spawns the script runner through npm-runner too', async () 
 	assertCrossPlatformSpawnOptions(cp.spawned[0].options, 'npm:run-script');
 });
 
+// The other half of the same wire: a preload that cannot be installed must not
+// degrade into shims without it. That state is #275 exactly, and it is reached
+// silently, the build hangs the machine instead of failing. The way it happens
+// in practice is the source file missing from the packaged bundle (a packaging
+// allow-list that forgot it), so it is the copy that fails here, not the temp
+// directory, which is why the shim writes would otherwise have gone ahead.
+test('npm:run-script refuses to start when the compat preload cannot be installed (#275)', async () => {
+	const shimDir = path.join(os.tmpdir(), `electron-node-shims-${process.pid}`);
+	// A previous test in this file may have written a good set; the assertion
+	// below is about what this load writes.
+	fs.rmSync(shimDir, { recursive: true, force: true });
+	const cp = stubbedSpawn();
+	const main = loadMain({
+		stubs: {
+			...silentLogging(),
+			'child_process': { spawn: cp.spawn },
+			'fs': {
+				copyFileSync(src, dest, ...rest) {
+					if (path.basename(src) === 'electron-node-compat.js') {
+						throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+					}
+					return fs.copyFileSync(src, dest, ...rest);
+				}
+			}
+		}
+	});
+	const event = createIpcEvent();
+
+	await main.invokeWith('npm:run-script', event, '/sites/wp', 'build');
+	// The refusal is reported a turn later, like a spawn failure, so the handler
+	// has finished its bookkeeping before it is told the run is over.
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	assert.equal(cp.spawned.length, 0, 'the runner was started into shims that carry no preload');
+	const shimName = process.platform === 'win32' ? 'node.cmd' : 'node';
+	assert.ok(!fs.existsSync(path.join(shimDir, shimName)), 'a node shim without the preload was written anyway');
+	const stderr = event.sent
+		.filter((m) => m.channel === 'npm:run-script:log' && m.payload.type === 'stderr')
+		.map((m) => m.payload.data)
+		.join('');
+	assert.match(stderr, /Failed to start/, 'the person who clicked the button was not told the run never started');
+	assert.match(stderr, /preload/, 'the reason does not name the preload');
+	const done = event.sent.find((m) => m.channel === 'npm:run-script:done');
+	assert.ok(done, 'the run was never settled, so the renderer waits forever');
+	assert.equal(done.payload.code, null);
+});
+
 test('npm:kill ends the script tree rather than signalling the runner alone', async (t) => {
 	const cp = stubbedSpawn();
 	const killChildTree = spy();
