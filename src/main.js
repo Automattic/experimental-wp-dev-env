@@ -1707,10 +1707,15 @@ ipcMain.handle('git:update-trunk', async (event, sitePath) => {
                 const patch = { updateIncomplete: true };
                 if (e && e.worktreeReset) patch.appliedPatch = null;
                 // Through writeWorkMeta, which reads HEAD — and here that is the
-                // right question, unlike in the success path above (#419). This
-                // failure does not return anyone to their ticket: the recovery
-                // below unlinks and leaves the contributor on trunk, which is
-                // where the flag will be read from.
+                // right question, unlike in the success path above (#419),
+                // because both failures that reach this line end where HEAD
+                // already is. The update's own checkout failed on trunk, and
+                // the recovery below leaves the contributor there, unlinked.
+                // A park whose checkout died arrives here too — `switchToBranch`
+                // tags that `stage: 'checkout'` as well — with HEAD still on the
+                // ticket, because Git moves it only once every file operation
+                // has succeeded; that flag belongs to the ticket, and HEAD says
+                // so. Neither is a case of writing where nobody will read.
                 try { await writeWorkMeta(sitePath, patch); } catch {}
             }
             sendLog(`\nUpdate failed during ${stage}: ${String(e && e.message ? e.message : e)}\n`);
