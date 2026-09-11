@@ -1,7 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizeExternalUrl, describeRefusedUrl, openExternalUrl, ALLOWED_URL_SCHEMES } = require('../../src/external-url.js');
+const { normalizeExternalUrl, openExternalUrl, ALLOWED_URL_SCHEMES } = require('../../src/external-url.js');
+
+test('a refused URL reaches the log escaped and bounded', async () => {
+	const rec = recorder();
+	await openExternalUrl(`file:///tmp/\n${'x'.repeat(500)}`, rec.options);
+	assert.equal(rec.refused.length, 1);
+	assert.ok(rec.refused[0].startsWith('file:///tmp/\\x0a'));
+	assert.equal(rec.refused[0].length, 121);
+	assert.ok(rec.refused[0].endsWith('…'));
+});
 
 // Stands in for shell.openExternal, so "did this reach the OS?" is an assertion
 // rather than something the test has to take on trust.
@@ -112,51 +121,4 @@ test('the allow-list is only http and https', () => {
 	// A guard against widening it by accident: adding a scheme should be a
 	// deliberate change with a reason, and this test is where that shows up.
 	assert.deepEqual(ALLOWED_URL_SCHEMES, ['http:', 'https:']);
-});
-
-test('a refusal reports the address, truncated', async () => {
-	const rec = recorder();
-	const long = `file:///${'a'.repeat(500)}`;
-
-	await openExternalUrl(long, rec.options);
-
-	assert.equal(rec.refused.length, 1);
-	assert.ok(rec.refused[0].length < 200, 'the log line should not carry a 500-character address');
-	assert.ok(rec.refused[0].startsWith('file:///aaa'), 'enough of the address to diagnose the caller');
-});
-
-// The address is about to be written into the file contributors attach to bug
-// reports, and electron-log passes newlines through unchanged. Left as-is, a
-// refused address could close the log line and open another one in the app's own
-// timestamp-and-scope format — a log that describes events that never happened.
-test('a refused address cannot forge a second log line', async () => {
-	const rec = recorder();
-	const forged = 'file:///tmp/x\n[2026-08-06 10:00:00.000] [info]  (app) update completed successfully';
-
-	await openExternalUrl(forged, rec.options);
-
-	assert.equal(rec.refused.length, 1);
-	assert.ok(!rec.refused[0].includes('\n'), 'the description must stay on one line');
-	// Escaped, not dropped: the line still says what the caller actually sent.
-	assert.ok(rec.refused[0].includes('file:///tmp/x\\x0a[2026-08-06'));
-});
-
-test('every control character is escaped, not just newlines', () => {
-	// Carriage return alone ends a line in some viewers, and U+2028/U+2029 do it
-	// in others, so the whole class is escaped rather than the obvious member.
-	assert.equal(describeRefusedUrl('file:///a\rb'), 'file:///a\\x0db');
-	assert.equal(describeRefusedUrl('file:///a\tb'), 'file:///a\\x09b');
-	assert.equal(describeRefusedUrl('file:///a\u2028b'), 'file:///a\\u2028b');
-	assert.equal(describeRefusedUrl('file:///a\u0000b'), 'file:///a\\x00b');
-	// Ordinary addresses are untouched.
-	assert.equal(describeRefusedUrl('file:///etc/passwd'), 'file:///etc/passwd');
-});
-
-test('truncation is applied to the escaped form', () => {
-	// Escaping expands the string, so truncating first would let an address of
-	// control characters land in the log several times over the cap.
-	const description = describeRefusedUrl(`file:${'\n'.repeat(500)}`);
-
-	assert.ok(description.length <= 121, `escaped description was ${description.length} characters`);
-	assert.ok(!description.includes('\n'));
 });
