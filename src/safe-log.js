@@ -47,7 +47,5 @@ function describeRefused(value) {
 }
 
 module.exports = {
-	CONTROL_CHARACTERS,
-	MAX_DESCRIPTION_LENGTH,
 	describeRefused
 };

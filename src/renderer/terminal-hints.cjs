@@ -1,36 +1,6 @@
 'use strict';
 
 /**
- * The two rules behind the command hints under the Terminal (#182): whether to
- * offer them at all, and whether the prompt is free to take one.
- *
- * Kept as a pure, dependency-free module so it can be unit tested without a
- * DOM: the renderer bundle imports it, `node --test` requires it directly
- * (same convention as setup-steps.cjs and dev-server-command.cjs).
- */
-
-/**
- * Whether the hints belong on screen yet.
- *
- * Both commands they name are things you do *again*, after a site is built and
- * you have started changing it. Before that they are not merely premature but
- * wrong: during the clone the terminal is streaming `Updating workdir n/6987`,
- * `npm install` has not run a first time, and there is no checkout to have
- * changed files in. A completed build is the point where re-running either one
- * becomes the normal thing to do, so it is the point where they appear.
- *
- * The checklist owns the first run of both commands and says so in its own
- * steps; these hints exist for everything after it.
- *
- * @param {Object}  flags
- * @param {boolean} [flags.hasBuilt] The site has a completed build on disk.
- * @return {boolean} True when the hints should be rendered.
- */
-function shouldShowTerminalHints(flags = {}) {
-	return Boolean(flags.hasBuilt);
-}
-
-/**
  * Whether the Terminal is occupied, and so cannot take a prefilled command.
  *
  * The hints offer to type `npm run build` / `npm install` at the prompt, which
@@ -78,4 +48,4 @@ function computeTerminalBusy(flags = {}) {
 	);
 }
 
-module.exports = { shouldShowTerminalHints, computeTerminalBusy };
+module.exports = { computeTerminalBusy };
