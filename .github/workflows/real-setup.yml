@@ -1,0 +1,56 @@
+name: Real WordPress setup
+
+# Deliberately opt-in: no pull_request, push or scheduled runs.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to test
+        type: choice
+        default: both
+        options:
+          - both
+          - macos-latest
+          - windows-latest
+
+permissions:
+  contents: read
+
+jobs:
+  real-setup:
+    name: Real setup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.platform == 'both' && '["macos-latest","windows-latest"]' || inputs.platform == 'macos-latest' && '["macos-latest"]' || '["windows-latest"]') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the renderer bundle
+        run: npm run build:once
+
+      - name: Create and serve a real WordPress site
+        run: npx --no-install playwright test --config tests/e2e/real-setup.config.js
+        env:
+          TOOLKIT_REAL_SETUP: '1'
+
+      - name: Upload setup evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-real-setup-${{ matrix.os }}
+          path: |
+            playwright-report/real-setup
+            test-results/real-setup
+          retention-days: 7

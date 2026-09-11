@@ -29,6 +29,9 @@ export default [
 			'build/',
 			'dist/',
 			'node_modules/',
+			// Generated Playwright reports contain bundled JavaScript, not source.
+			'playwright-report/',
+			'test-results/',
 			// VitePress build output and cache: generated code, same reasoning as
 			// src/renderer/index.js above.
 			'docs/.vitepress/dist/',
