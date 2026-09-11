@@ -1,8 +1,13 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 #
-# CodeRabbit reviews every pull request against the review standard in
-# .github/instructions/code-review.instructions.md. That file is the only copy of the standard;
-# this one only points at it and turns off the output the standard says not to produce.
+# CodeRabbit reviews a pull request, when asked with `@coderabbitai review`, against the review
+# standard in .github/instructions/code-review.instructions.md. That file is the only copy of the
+# standard; this one only points at it and turns off the output the standard says not to produce.
+#
+# Automatic review is off. The WordPress organisation is on CodeRabbit's free open-source plan,
+# which includes about one review per hour for the whole organisation. An automatic run that hits
+# that limit marks the commit as reviewed and a later request for it is refused; a manual request
+# that is refused can simply be repeated later.
 
 language: en-US
 
@@ -24,11 +29,9 @@ reviews:
   in_progress_fortune: false
   review_status: true
 
+  # `@coderabbitai review` runs an incremental review, `@coderabbitai full review` one from scratch.
   auto_review:
-    enabled: true
-    drafts: false
-    base_branches:
-      - trunk
+    enabled: false
 
   # Tests are a reviewer finding; the author writes them. Generated tests are the "green while proving nothing" shape the standard warns about.
   finishing_touches:
