@@ -160,4 +160,4 @@ function pickLatest({ prs, attachments, prRankComplete } = {}) {
 	return best;
 }
 
-module.exports = { NEAR_TIE_MS, attachmentDateMs, prDateMs, pickLatest };
+module.exports = { NEAR_TIE_MS, attachmentDateMs, pickLatest };
