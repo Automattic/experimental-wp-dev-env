@@ -3,6 +3,15 @@ const assert = require('node:assert/strict');
 
 const { normalizeExternalUrl, openExternalUrl, ALLOWED_URL_SCHEMES } = require('../../src/external-url.js');
 
+test('a refused URL reaches the log escaped and bounded', async () => {
+	const rec = recorder();
+	await openExternalUrl(`file:///tmp/\n${'x'.repeat(500)}`, rec.options);
+	assert.equal(rec.refused.length, 1);
+	assert.ok(rec.refused[0].startsWith('file:///tmp/\\x0a'));
+	assert.equal(rec.refused[0].length, 121);
+	assert.ok(rec.refused[0].endsWith('…'));
+});
+
 // Stands in for shell.openExternal, so "did this reach the OS?" is an assertion
 // rather than something the test has to take on trust.
 function recorder() {

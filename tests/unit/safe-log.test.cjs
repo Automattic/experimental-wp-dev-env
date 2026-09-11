@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { describeRefused, MAX_DESCRIPTION_LENGTH } = require('../../src/safe-log.js');
+const { describeRefused } = require('../../src/safe-log.js');
 
 test('describeRefused escapes every log-breaking control character', () => {
 	assert.equal(describeRefused('file:///a\rb'), 'file:///a\\x0db');
@@ -22,7 +22,7 @@ test('describeRefused prevents a refused value from forging a second log entry',
 test('describeRefused escapes before bounding its output', () => {
 	const description = describeRefused(`file:${'\n'.repeat(500)}`);
 
-	assert.equal(description.length, MAX_DESCRIPTION_LENGTH + 1);
+	assert.equal(description.length, 121);
 	assert.ok(description.endsWith('…'));
 	assert.ok(!description.includes('\n'));
 });
