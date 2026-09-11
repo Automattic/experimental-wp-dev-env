@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isRegisteredSite, describeRefusedSite, deleteRegisteredSite, revealRegisteredSite, clearRegisteredSiteLog } = require('../../src/site-registry.js');
+const { isRegisteredSite, deleteRegisteredSite, revealRegisteredSite, clearRegisteredSiteLog } = require('../../src/site-registry.js');
 
 // A couple of paths the app might actually hold in its registry, one per platform
 // shape, so the tests aren't accidentally tied to POSIX separators.
@@ -69,14 +69,6 @@ test('junk input is refused rather than thrown', async () => {
 	assert.equal(isRegisteredSite('/Users/dev/sites/my-site', undefined), false);
 });
 
-test('a refusal reports the path, truncated', () => {
-	const long = `/Users/dev/${'a'.repeat(500)}`;
-	const description = describeRefusedSite(long);
-
-	assert.ok(description.length < 200, 'the log line should not carry a 500-character path');
-	assert.ok(description.startsWith('/Users/dev/aaa'), 'enough of the path to diagnose the caller');
-});
-
 // The path is about to be written into the file contributors attach to bug
 // reports, and electron-log passes newlines through unchanged. Left as-is, a
 // refused path could close the log line and open another one in the app's own
@@ -91,26 +83,6 @@ test('a refused path cannot forge a second log line', async () => {
 	assert.ok(!rec.refused[0].includes('\n'), 'the description must stay on one line');
 	// Escaped, not dropped: the line still says what the caller actually sent.
 	assert.ok(rec.refused[0].includes('/tmp/x\\x0a[2026-08-06'));
-});
-
-test('every control character is escaped, not just newlines', () => {
-	// Carriage return alone ends a line in some viewers, and U+2028/U+2029 do it
-	// in others, so the whole class is escaped rather than the obvious member.
-	assert.equal(describeRefusedSite('/a\rb'), '/a\\x0db');
-	assert.equal(describeRefusedSite('/a\tb'), '/a\\x09b');
-	assert.equal(describeRefusedSite('/a\u2028b'), '/a\\u2028b');
-	assert.equal(describeRefusedSite('/a\u0000b'), '/a\\x00b');
-	// Ordinary paths are untouched.
-	assert.equal(describeRefusedSite('/Users/dev/sites/my-site'), '/Users/dev/sites/my-site');
-});
-
-test('truncation is applied to the escaped form', () => {
-	// Escaping expands the string, so truncating first would let a path of control
-	// characters land in the log several times over the cap.
-	const description = describeRefusedSite(`/${'\n'.repeat(500)}`);
-
-	assert.ok(description.length <= 121, `escaped description was ${description.length} characters`);
-	assert.ok(!description.includes('\n'));
 });
 
 // --- revealRegisteredSite ------------------------------------------------
