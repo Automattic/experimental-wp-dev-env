@@ -92,6 +92,8 @@ npm run test:e2e:packaged
 
 `CSC_IDENTITY_AUTO_DISCOVERY=false` is mandatory on macOS — electron-builder signs during `--dir` without it — and harmless everywhere else. The test tells you if you forgot the build.
 
+Two of its tests read the payload against the allow-list in `build.files` (package.json): the root of `app.asar`, through Electron's own fs from inside the packaged app, and the root of `app.asar.unpacked` on disk, must hold nothing outside that list. That is what keeps a directory from shipping itself: to widen what ships, edit both the list in package.json and the one in `tests/e2e/packaged/smoke.spec.js`, on purpose. CI seeds a signing key, Playwright output, a leftover `dist/` and the VitePress build under `docs/` before packaging so the run proves they stay out (#387, #390). Locally the seeding is not automatic: a checkout that has run the suites or the docs build carries `test-results/` and `docs/.vitepress/dist/` already and a green run proves the same thing for those two, but `.codesigning` exists only on a signing machine, so the full proof is the CI run.
+
 Neither end-to-end command downloads a browser. The only thing they launch is the Electron already in the tree, which is why CI has no `playwright install` step. The one exception is the Inspector, and it is opt-in — see above.
 
 ## Running a real setup on demand

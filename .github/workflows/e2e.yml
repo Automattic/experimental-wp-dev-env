@@ -107,13 +107,19 @@ jobs:
       - name: Build the renderer bundle
         run: npm run build:once
 
-      # Buildkite creates this directory during signed macOS builds. A canary makes the
-      # packaged test prove that build-only signing material stays out of every payload.
-      - name: Stage a build-only signing canary
+      # Things a developer's checkout carries that a clean CI checkout does not, so
+      # the packaged test proves none of them ships (#387, #390): the directory the
+      # signed macOS builds write their key to, Playwright output, a leftover from
+      # an earlier packaging run, and the VitePress build under docs/ — the nested
+      # `dist/` that electron-builder's own output-directory exclusion never covered.
+      - name: Stage build and test leftovers that must not ship
         shell: bash
         run: |
-          mkdir -p .codesigning
+          mkdir -p .codesigning test-results/packaging-canary dist/intermediate docs/.vitepress/dist
           printf 'must not ship' > .codesigning/apple_api_key
+          printf 'must not ship' > test-results/packaging-canary/trace.zip
+          printf 'must not ship' > dist/intermediate/leftover.txt
+          printf 'must not ship' > docs/.vitepress/dist/index.html
 
       - name: Package (unsigned, --dir)
         # Mandatory on macOS: electron-builder signs during `--dir` otherwise.
