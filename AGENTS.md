@@ -39,6 +39,12 @@ Once the pull request is open and out of draft, read the CodeRabbit check's mess
 
 That file carries the procedure as well as the standard. Follow it rather than improvising a review.
 
+### A pull request you did not open belongs to its author
+
+Never push commits to, rebase, update, edit the description of, or merge a pull request that the person you are working for did not open. That holds even when the repository lets maintainers push to the branch, even when the fix is one line, and even when the author has been quiet for weeks. The author decides what lands on their branch and when it merges.
+
+What you may do on someone else's pull request is review it: read it, run it, run the review procedure against it, and leave the findings as a comment or a review, with enough detail that the author can apply them without guessing. A finding you could fix in a minute is still a finding you write down, with the diff if that helps. If a pull request is blocked on its author and the work is urgent, say so to the person you are working for and let them decide how to reach the author, rather than taking the branch over.
+
 ### The pull request description follows the template
 
 [`.github/pull_request_template.md`](.github/pull_request_template.md) is the shape, and GitHub loads it into every new pull request automatically — including ones opened with `gh pr create`, as long as you do not pass a `--body` that replaces it. Fill it in rather than writing your own structure.
