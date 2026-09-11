@@ -6,6 +6,10 @@ The [WordPress Contributor Toolkit](https://make.wordpress.org/core/2026/04/16/w
 
 ![A site ready for work: Start dev server, Start build watch, Review & submit changes, the Trac ticket panel and the patch panel](https://wordpress.github.io/contributor-toolkit/screenshots/site-view.png)
 
+More info:
+- [WordPress Core Dev Environment Toolkit: A Faster Path to Your First Core Contribution](https://make.wordpress.org/core/2026/04/16/wordpress-core-dev-environment-toolkit-a-faster-path-to-your-first-core-contribution/)
+- [WordPress Contributor Toolkit 1.0: A smoother workflow for your first Core contribution](https://make.wordpress.org/core/2026/08/14/wordpress-contributor-toolkit-1-0-a-smoother-workflow-for-your-first-core-contribution/)
+
 ### Why
 
 One of the most common complaints from Contributor Day facilitators is this: participants spend the entire session trying to set up their local environment and never get to actually contribute.
