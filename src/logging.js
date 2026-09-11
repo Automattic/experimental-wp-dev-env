@@ -109,8 +109,7 @@ function getLogFilePath() {
 // sequence or U+2028 begins a new line in one viewer or another, which is the
 // same forgery through a different reader.
 //
-// This is the same escaping as `describeRefusedUrl` (external-url.js) and
-// `describeRefusedSite` (site-registry.js). Those two describe a single value
+// This is the same escaping as `describeRefused` (safe-log.js), which describes a single value
 // for a caller; this one is the writer itself and bounds a whole line, so the
 // limits differ — a spawn message with a long path is legitimately longer than
 // a refused URL. Keeping the escape identical matters more than sharing it.
