@@ -2,13 +2,15 @@
 
 [![Unit tests](https://github.com/WordPress/contributor-toolkit/actions/workflows/unit-tests.yml/badge.svg?branch=trunk)](https://github.com/WordPress/contributor-toolkit/actions/workflows/unit-tests.yml) [![Latest release](https://img.shields.io/github/v/release/WordPress/contributor-toolkit)](https://github.com/WordPress/contributor-toolkit/releases/latest) [![Downloads](https://img.shields.io/github/downloads/WordPress/contributor-toolkit/total)](https://github.com/WordPress/contributor-toolkit/releases)
 
+Make WordPress posts:
+- [WordPress Core Dev Environment Toolkit: A Faster Path to Your First Core Contribution](https://make.wordpress.org/core/2026/04/16/wordpress-core-dev-environment-toolkit-a-faster-path-to-your-first-core-contribution/) (April 2026)
+- [WordPress Contributor Toolkit 1.0: A smoother workflow for your first Core contribution](https://make.wordpress.org/core/2026/08/14/wordpress-contributor-toolkit-1-0-a-smoother-workflow-for-your-first-core-contribution/) (August 2026)
+
+----
+
 The [WordPress Contributor Toolkit](https://make.wordpress.org/core/2026/04/16/wordpress-core-dev-environment-toolkit-a-faster-path-to-your-first-core-contribution/) is a desktop Electron application (macOS on Apple Silicon, Windows, and Linux) that takes a contributor from nothing to a working WordPress core development environment, lets them try the work that already exists on a Trac ticket, and lets them send their own change back — as a pull request, a Trac attachment, or a patch for a mentor. No Git, Node.js, npm or Docker on the host, and no push credential written to disk.
 
 ![A site ready for work: Start dev server, Start build watch, Review & submit changes, the Trac ticket panel and the patch panel](https://wordpress.github.io/contributor-toolkit/screenshots/site-view.png)
-
-More info:
-- [WordPress Core Dev Environment Toolkit: A Faster Path to Your First Core Contribution](https://make.wordpress.org/core/2026/04/16/wordpress-core-dev-environment-toolkit-a-faster-path-to-your-first-core-contribution/)
-- [WordPress Contributor Toolkit 1.0: A smoother workflow for your first Core contribution](https://make.wordpress.org/core/2026/08/14/wordpress-contributor-toolkit-1-0-a-smoother-workflow-for-your-first-core-contribution/)
 
 ### Why
 
