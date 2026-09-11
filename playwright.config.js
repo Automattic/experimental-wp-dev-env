@@ -20,6 +20,8 @@ module.exports = defineConfig({
 	// same packaged binary and, in the journeys, over the same fixture roots.
 	workers: 1,
 	fullyParallel: false,
+	// A focused test must not silently shrink the suite in CI.
+	forbidOnly: !!process.env.CI,
 	// Locally a retry hides a flake you want to see; in CI it stops one flake from
 	// blocking somebody else's pull request.
 	retries: process.env.CI ? 1 : 0,
