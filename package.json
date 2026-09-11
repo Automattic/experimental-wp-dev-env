@@ -42,8 +42,10 @@
       "buildResources": "build"
     },
     "files": [
-      "!vendor{,/**/*}",
-      "!.codesigning{,/**/*}",
+      "package.json",
+      "src/**/*",
+      "!src/renderer/index.jsx",
+      "local-playground-web/**/*",
       "!node_modules/dugite/git/libexec/git-core/*.dll",
       "!node_modules/dugite/git/libexec/git-core/*.dylib",
       "!node_modules/dugite/git/libexec/git-core/*.json",

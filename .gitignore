@@ -29,7 +29,8 @@ test-results
 fastlane/README.md
 fastlane/report.xml
 
-# Bundler, and the npm package cache the artifact builds keep between runs. Neither is app content —
-# `vendor` is excluded from the packaged app for the same reason.
+# Bundler, and the npm package cache the artifact builds keep between runs. Neither is app content,
+# and neither reaches the packaged app: `build.files` in package.json names what ships, and `vendor`
+# is not on it (#399).
 vendor/bundle
 vendor/npm

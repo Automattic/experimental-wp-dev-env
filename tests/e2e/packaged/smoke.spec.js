@@ -203,24 +203,120 @@ test( 'the preload bridge exposes every expected key', async () => {
 	expect( exposed ).toEqual( EXPECTED_API_KEYS );
 } );
 
-test( 'the packaged app excludes build-only signing material', async () => {
-	const signingFiles = await electronApp.evaluate( ( { app } ) => {
+/**
+ * The top-level entries `build.files` in package.json allows into the payload.
+ *
+ * `files` is a positive list since #399, so this is the same list read from
+ * the other side: what the packer was told to take is what the artifact must
+ * contain, no more and no less. It was an exclusion list before, and the cost
+ * of that shape was #390 (a signing key swept into every macOS artifact) and
+ * #387 (Playwright traces and a nested VitePress `dist/` shipping from
+ * whichever machine built last). Neither had to be predicted by name to be
+ * caught here: anything not on this list fails the assertion.
+ *
+ * Adding an entry means adding it to package.json *and* here, deliberately.
+ * That is the point — widening what ships is a visible decision, not a
+ * directory that ships itself. The two lists are held together by the drift
+ * test below, so an edit to one and not the other fails without needing an
+ * artifact that demonstrates it.
+ *
+ * `local-playground-web` is optional: src/main.js serves it when present, it
+ * is not in the repository, and the canary asserts nothing about it beyond
+ * "allowed if it turns up".
+ */
+const REQUIRED_TOP_LEVEL_ENTRIES = [ 'node_modules', 'package.json', 'src' ];
+const OPTIONAL_TOP_LEVEL_ENTRIES = [ 'local-playground-web' ];
+
+function unexpectedEntries( entries ) {
+	const allowed = new Set( [ ...REQUIRED_TOP_LEVEL_ENTRIES, ...OPTIONAL_TOP_LEVEL_ENTRIES ] );
+	return entries.filter( ( name ) => ! allowed.has( name ) );
+}
+
+/**
+ * The top-level entry each positive `build.files` pattern lets in.
+ *
+ * `node_modules` never appears in the list: electron-builder collects
+ * production dependencies itself and applies only the `!` patterns to them, so
+ * it is added here to make the two sides comparable.
+ */
+function allowedByPackageJson() {
+	const { build } = require( path.join( REPO_ROOT, 'package.json' ) );
+	const fromPatterns = build.files
+		.filter( ( pattern ) => ! pattern.startsWith( '!' ) )
+		.map( ( pattern ) => pattern.split( '/' )[ 0 ] );
+
+	return [ ...new Set( [ 'node_modules', ...fromPatterns ] ) ].sort();
+}
+
+function resourcesDirOf( binary ) {
+	return process.platform === 'darwin'
+		? path.join( binary, '..', '..', 'Resources' ) // Contents/MacOS/<binary> -> Contents/Resources
+		: path.join( path.dirname( binary ), 'resources' );
+}
+
+test( 'the allow-list in this file still matches build.files', () => {
+	// Closes the direction the payload assertions cannot see. They catch an entry
+	// that ships and should not; this catches the lists themselves drifting apart
+	// — a pattern removed from package.json that the test still expects, or a
+	// pattern added there that nobody mirrored here. The literal lists above stay
+	// the thing a human edits, deliberately: this only asserts they agree.
+	expect( [ ...REQUIRED_TOP_LEVEL_ENTRIES, ...OPTIONAL_TOP_LEVEL_ENTRIES ].sort() )
+		.toEqual( allowedByPackageJson() );
+} );
+
+test( 'app.asar carries exactly the allow-listed top-level entries', async () => {
+	// Read through Electron's asar-aware fs, from inside the packaged main
+	// process, so the listing is the archive's own root and not the directory
+	// electron-builder packed it from.
+	const entries = await electronApp.evaluate( ( { app } ) => {
+		const nodeRequire = process.mainModule.require;
+		const appFs = nodeRequire( 'node:fs' );
+
+		return appFs.readdirSync( app.getAppPath() ).sort();
+	} );
+
+	expect( unexpectedEntries( entries ), 'entries in app.asar that build.files does not allow' ).toEqual( [] );
+	for ( const required of REQUIRED_TOP_LEVEL_ENTRIES ) {
+		expect( entries, `${ required } is missing from app.asar` ).toContain( required );
+	}
+
+	// The one negative pattern in the allow-list. `src/**/*` would otherwise
+	// carry the un-bundled entry point into the archive beside the esbuild
+	// output that replaces it, and a root listing cannot see one level down.
+	const rendererEntries = await electronApp.evaluate( ( { app } ) => {
 		const nodeRequire = process.mainModule.require;
 		const appFs = nodeRequire( 'node:fs' );
 		const appPath = nodeRequire( 'node:path' );
-		const signingDirectory = appPath.join( app.getAppPath(), '.codesigning' );
 
-		return appFs.existsSync( signingDirectory ) ? appFs.readdirSync( signingDirectory ) : [];
+		return appFs.readdirSync( appPath.join( app.getAppPath(), 'src', 'renderer' ) ).sort();
 	} );
 
-	expect( signingFiles ).toEqual( [] );
+	expect( rendererEntries, 'the esbuild sources are replaced by the bundle, not shipped beside it' )
+		.not.toContain( 'index.jsx' );
+	expect( rendererEntries, 'the renderer bundle is missing — was `npm run build:once` run before packaging?' )
+		.toEqual( expect.arrayContaining( [ 'index.html', 'index.js', 'index.css' ] ) );
+} );
+
+test( 'app.asar.unpacked carries only allow-listed top-level entries', () => {
+	// The unpacked tree is what `asarUnpack` and the native-module unpack pull
+	// back out of the archive, so it can only ever hold a subset of the same
+	// list. Plain Node fs: this side is on disk. `node_modules` is required
+	// because the bundled Git lives there and the spawn test below needs it.
+	const unpackedRoot = path.join( resourcesDirOf( findPackagedBinary() ), 'app.asar.unpacked' );
+	expect( fs.existsSync( unpackedRoot ), `${ unpackedRoot } is missing` ).toBe( true );
+
+	const entries = fs.readdirSync( unpackedRoot ).sort();
+
+	expect( unexpectedEntries( entries ), 'entries in app.asar.unpacked that build.files does not allow' ).toEqual( [] );
+	expect( entries ).toContain( 'node_modules' );
 } );
 
 test( 'the packaged payload has no .codesigning directory outside app.asar', () => {
-	// The sibling test above reads through Electron's asar-aware fs, so it sees
-	// inside app.asar — and only there. This walk runs on plain Node fs, which is
-	// not asar-aware, so it checks the rest of the payload for the same directory:
-	// the unpacked asar directory, extra resources or files, and framework helpers.
+	// The allow-list above already rules the directory out of app.asar's root and
+	// out of app.asar.unpacked's. This walk runs on plain Node fs, which is not
+	// asar-aware, over the whole payload, so it also covers the places neither
+	// listing reaches: extra resources or files, and framework helpers. The key
+	// is the one thing worth looking for by name (#390).
 	const binary = findPackagedBinary();
 	const packagedRoot = process.platform === 'darwin'
 		? path.join( binary, '..', '..', '..' ) // Contents/MacOS/<binary> -> the .app bundle
@@ -328,11 +424,7 @@ test( 'the packaged Git tree carries neither the credential manager nor git-lfs'
 	// what goes into the asar and, through the unpack rule, what comes back
 	// out — so this is where a rewritten glob that stopped matching shows up.
 	// Plain Node fs, rooted at the unpacked tree, on both platforms.
-	const binary = findPackagedBinary();
-	const resourcesDir = process.platform === 'darwin'
-		? path.join( binary, '..', '..', 'Resources' ) // Contents/MacOS/<binary> -> Contents/Resources
-		: path.join( path.dirname( binary ), 'resources' );
-	const gitRoot = path.join( resourcesDir, 'app.asar.unpacked', 'node_modules', 'dugite', 'git' );
+	const gitRoot = path.join( resourcesDirOf( findPackagedBinary() ), 'app.asar.unpacked', 'node_modules', 'dugite', 'git' );
 	expect( fs.existsSync( gitRoot ), `${ gitRoot } is missing` ).toBe( true );
 
 	const offenders = [];
