@@ -39,7 +39,7 @@ import { parsePrRef } from '../patch-sources.cjs';
 import { prStateBadge } from './pr-state.cjs';
 import { statusBadge } from '../trac-ticket-info.cjs';
 import { prDateLabel } from './pr-date-label.cjs';
-import { ticketUrl, attachUrl } from './trac-ticket.cjs';
+import { ticketUrl, attachUrl, parseTicketRef } from './trac-ticket.cjs';
 import { adminUrl, adminerUrl } from './site-urls.cjs';
 import { ticketBranchRows, ticketListCard } from './ticket-branch-list.cjs';
 import { ticketTrunkNotice, rebaseRefusal } from './ticket-trunk-notice.cjs';
@@ -78,19 +78,24 @@ const COPY_BUTTON_LABELS = {
 // the accessible way: still in the tab order, `aria-disabled` rather than
 // `disabled` so assistive technology reads it, the sentence as its
 // description and as a tooltip. `title` would do neither, since Chromium
-// shows no tooltip on a disabled control. Without a reason it is the plain
-// Button, `disabled` passed through for gates that need no sentence.
+// shows no tooltip on a disabled control.
+//
+// The Tooltip is rendered whether or not there is a reason, and with no text
+// it renders its anchor and no popover. The conditional version returned two
+// different element types at the same position, so React remounted the
+// button every time the gate flipped — which throws away exactly what
+// `accessibleWhenDisabled` buys, since a keyboard user who just activated
+// the control has the focused element destroyed under them and focus falls
+// back to the document. `disabled` is passed through for gates that need no
+// sentence (an empty input, not a blocked action).
 function ReasonedButton({ reason, disabled, children, ...props }) {
-  if (!reason) {
-    return <Button disabled={disabled} {...props}>{children}</Button>;
-  }
   return (
-    <Tooltip text={reason} placement="bottom">
+    <Tooltip text={reason || undefined} placement="bottom">
       <Button
         {...props}
-        disabled
-        accessibleWhenDisabled
-        description={reason}
+        disabled={reason ? true : disabled}
+        accessibleWhenDisabled={Boolean(reason)}
+        description={reason || undefined}
       >{children}</Button>
     </Tooltip>
   );
@@ -1832,13 +1837,17 @@ function SiteRow({ sitePath, initialized, createdAt, label, onInitialized, onSit
         // error line over a set of choices would read as a fault, so the
         // message is kept for real failures only. `canCarry` is main's word
         // on whether the edits can ride into this ticket, and the count
-        // arrives only on the path that scanned before refusing.
+        // arrives only on the path that scanned before refusing. Only that
+        // path names the ticket too, so the other one reads it back off the
+        // ref the switch was asked for, rather than saying "the ticket" to
+        // someone who typed a number (#409).
         if (res?.code === 'dirty-trunk') {
+          const parsedRef = parseTicketRef(String(ref));
           setBlockedByTrunkWork({
             ref: String(ref),
             canCarry: Boolean(res.canCarry),
             files: typeof res.files === 'number' ? res.files : null,
-            ticket: res.ticket || null
+            ticket: res.ticket || (parsedRef.ok ? parsedRef.id : null)
           });
         } else {
           setTicketError(res?.error || 'Could not save the ticket.');

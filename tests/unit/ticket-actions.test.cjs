@@ -37,7 +37,15 @@ test('rebaseDisabledReason adds the tree-rewrite guards after the shared gate (#
 	// The shared gate still leads: a trunk update with the dev server running
 	// reports the update, which clears on its own.
 	assert.match(rebaseDisabledReason({ updateState: 'fetching', devServerActive: true }), /trunk update/);
+	// A discard is already rewriting the tree, so it leads over every process
+	// the contributor could otherwise wait out — the order the discard's own
+	// reason uses, which the old inline `title` on this button produced.
 	assert.match(rebaseDisabledReason({ discarding: true, devServerActive: true }), /discard/);
+	assert.match(rebaseDisabledReason({ discarding: true, installing: true, building: true }), /discard/);
+	assert.match(rebaseDisabledReason({ discarding: true, updateState: 'building' }), /discard/);
+	// Including over the shared gate's own first branch: a discard in flight
+	// is the tree rewrite that has to finish, whatever else is settling.
+	assert.match(rebaseDisabledReason({ discarding: true, ticketSaving: true }), /discard/);
 });
 
 test('dirtyTrunkQuestion counts the files and offers the carry for a new ticket (#234)', () => {

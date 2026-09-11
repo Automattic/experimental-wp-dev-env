@@ -8,9 +8,10 @@
  * discard's guards on top. Each branch that disables a control has a sentence
  * here, because a disabled control carrying its reason as `title` explains
  * nothing: Chromium shows no tooltip on a disabled element and assistive
- * technology skips one with the real `disabled` attribute. The component
- * renders the sentence through `Tooltip` + `accessibleWhenDisabled` +
- * `description`, the shape the discard link already uses.
+ * technology skips one with the real `disabled` attribute. `ReasonedButton`
+ * in `index.jsx` renders the sentence, and is the only sanctioned way to
+ * disable a ticket action: a bare `disabled=` on one of these controls is
+ * the bug this module exists to close.
  *
  * Ordered like `discardDisabledReason` in `changes-note.cjs`: the action
  * already underway first, then the processes the contributor can wait for or
@@ -41,9 +42,14 @@ function ticketActionDisabledReason({ ticketSaving, deletingBranch, updateState 
  * @return {string|null}
  */
 function rebaseDisabledReason(state = {}) {
+	// `discarding` leads, as it does in `discardDisabledReason`: a discard is
+	// already rewriting the tree, and reporting an install the contributor
+	// could wait out would name the wrong thing. The rest of the shared gate
+	// follows, then the dev server, which is the one the contributor has to
+	// act on rather than wait for.
+	if (state.discarding) return 'Wait for the discard to finish before updating the ticket.';
 	const shared = ticketActionDisabledReason(state);
 	if (shared) return shared;
-	if (state.discarding) return 'Wait for the discard to finish before updating the ticket.';
 	if (state.devServerActive) return 'Stop the dev server before updating the ticket.';
 	return null;
 }
